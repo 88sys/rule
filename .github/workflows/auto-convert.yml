@@ -50,14 +50,17 @@ jobs:
           - rule: apple
             list: apple.list
             mrs: apple.mrs
+          # 以后加新规则就在这里加就行
 
     if: github.event.inputs.target == 'all' || github.event.inputs.target == '${{ matrix.rule }}'
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: clash_meta
+
       - run: chmod +x clash_meta
 
       - name: 生成 ${{ matrix.mrs }}
@@ -67,54 +70,22 @@ jobs:
             echo "正在转换 ${{ matrix.list }} → ${{ matrix.mrs }}"
             ./clash_meta convert-ruleset domain text "${{ matrix.list }}" "${{ matrix.mrs }}"
             echo "converted=true" >> $GITHUB_OUTPUT
-            echo "file=${{ matrix.mrs }}" >> $GITHUB_OUTPUT
           else
-          echo "跳过：${{ matrix.list }} 不存在"
+            echo "跳过：${{ matrix.list }} 不存在（正常）"
           fi
 
-      # 终极核武器：用 GitHub API 提交，100% 显示你想要的消息
-      - name: 通过 GitHub API 提交（永不显示 workflow 路径）
+      # 终极神器：彻底解决显示 workflow 文件名问题
+      - name: 提交更新（永别 .github/workflows/xxx.yml）
         if: steps.convert.outputs.converted == 'true'
-        uses: actions/github-script@v7
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          script: |
-            const fs = require('fs');
-            const path = '${{ steps.convert.outputs.file }}';
-            const content = fs.readFileSync(path, 'base64');
-            const msg = `chore: update ${{ steps.convert.outputs.file }} ${{ new Date().toISOString().slice(0,16).replace('T',' ') }}`;
-            
-            await github.rest.repos.createOrUpdateFileContents({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              path: path,
-              message: msg,
-              content: content,
-              branch: 'main',
-              sha: (await github.rest.repos.getContent({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                path: path,
-                ref: 'main'
-              })).data.sha
-            }).catch(err => {
-              if (err.message.includes('sha')) {
-                // 文件是新增的，没有 sha
-                return github.rest.repos.createOrUpdateFileContents({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  path: path,
-                  message: msg,
-                  content: content,
-                  branch: 'main'
-                });
-              }
-              throw err;
-            });
-            console.log(`成功提交：${msg}`);
+          commit_message: "chore: update ${{ matrix.mrs }} $(date -u '+%Y-%m-%d %H:%M')"
+          file_pattern: ${{ matrix.mrs }}
+          push_options: --force  # 可选：确保一定推上去
 
   nothing-to-do:
     needs: [download-kernel, convert-and-push]
     if: always() && needs.convert-and-push.result == 'skipped'
     runs-on: ubuntu-latest
     steps:
-      - run: echo "一个 .list 文件都没找到，啥也没干～"
+      - run: echo "一个 .list 文件都没找到，啥也没干～（正常）"
