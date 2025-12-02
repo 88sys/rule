@@ -1,4 +1,4 @@
-name: 更新 mrs（终极无敌容错版）
+name: 更新 mrs（容错版）
 
 on:
   workflow_dispatch:
@@ -18,93 +18,94 @@ permissions:
   contents: write
 
 jobs:
-  # 先检查到底有没有至少一个 .list 文件需要处理
-  check-files:
+  # 第一步：统一下载 clash_meta 内核（只跑一次，所有 job 共享）
+  download-kernel:
     runs-on: ubuntu-latest
     outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-      reason: ${{ steps.check.outputs.reason }}
+      cache-key: ${{ steps.cache.outputs.cache-key }}
     steps:
       - uses: actions/checkout@v4
-      - id: check
-        run: |
-          FILES=""
-          [ -f cn_domain-extra.list ] && FILES="$FILES cn_domain-extra.list"
-          [ -f proxy.list ] && FILES="$FILES proxy.list"
-          [ -f apple.list ] && FILES="$FILES apple.list"
-          
-          if [ -z "$FILES" ]; then
-            echo "should_run=false" >> $GITHUB_OUTPUT
-            echo "reason=仓库里一个 .list 文件都没找到，啥也不用干了～" >> $GITHUB_OUTPUT
-          else
-            echo "should_run=true" >> $GITHUB_OUTPUT
-            echo "reason=找到这些文件，将要处理：$FILES" >> $GITHUB_OUTPUT
-          fi
 
-  # 只有 check-files 说“可以跑”才继续后面的真正任务
-  update-cn:
-    needs: check-files
-    if: ${{ needs.check-files.outputs.should_run == 'true' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'cn_domain-extra') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: 下载 Clash Meta 内核
-        run: |   # （下载代码不变，略）
+      - name: 缓存 + 下载 Clash Meta 内核（只下一次）
+        id: cache
+        run: |
+          CACHE_KEY="clash_meta_v1.19.17_$(date +%s)"
+          echo "cache-key=$CACHE_KEY" >> $GITHUB_OUTPUT
+          
           URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-v1.19.17.gz"
           wget -q "$URL" || wget -q "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-compatible-v1.19.17.gz"
-          FILENAME=$(ls *.gz); gzip -d "$FILENAME"; chmod +x "${FILENAME%.gz}"; mv "${FILENAME%.gz}" clash_meta
+          FILENAME=$(ls *.gz)
+          gzip -d "$FILENAME"
+          chmod +x "${FILENAME%.gz}"
+          mv "${FILENAME%.gz}" clash_meta
+          echo "Clash Meta 内核已准备好"
 
-      - name: 生成 cn_domain-extra.mrs（已确认文件存在）
-        run: ./clash_meta convert-ruleset domain text cn_domain-extra.list cn_domain-extra.mrs
+      - name: 上传 clash_meta 给后面 job 用
+        uses: actions/upload-artifact@v4
+        with:
+          name: clash_meta_binary
+          path: clash_meta
+          retention-days: 1
 
-      - name: 提交
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f cn_domain-extra.mrs
-          git commit -m "chore: update cn_domain-extra.mrs $(date -u +%Y-%m-%d %H:%M)" || echo "no change"
-          git push origin main
-
-  update-proxy:
-    needs: check-files
-    if: ${{ needs.check-files.outputs.should_run == 'true' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'proxy') }}
+  # 真正干活的 job（全部依赖上面下载好的内核）
+  update-all:
+    needs: download-kernel
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rule: [cn_domain-extra, proxy, apple]
+        include:
+          - rule: cn_domain-extra
+            list: cn_domain-extra.list
+            mrs: cn_domain-extra.mrs
+          - rule: proxy
+            list: proxy.list
+            mrs: proxy.mrs
+          - rule: apple
+            list: apple.list
+            mrs: apple.mrs
+    # 只有点了 all 或者点了具体这个，才跑
+    if: >
+      github.event.inputs.target == 'all' || 
+      github.event.inputs.target == '${{ matrix.rule }}'
+
     steps:
       - uses: actions/checkout@v4
-      - name: 下载 Clash Meta 内核
-        run: # 同上
-      - name: 生成 proxy.mrs（已确认文件存在）
-        run: ./clash_meta convert-ruleset domain text proxy.list proxy.mrs
-      - name: 提交
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f proxy.mrs
-          git commit -m "chore: update proxy.mrs $(date -u +%Y-%m-%d %H:%M)" || echo "no change"
-          git push origin main
 
-  update-apple:
-    needs: check-files
-    if: ${{ needs.check-files.outputs.should_run == 'true' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'apple') }}
+      - name: 下载前面缓存的 clash_meta 二进制
+        uses: actions/download-artifact@v4
+        with:
+          name: clash_meta_binary
+
+      - name: 赋予执行权限
+        run: chmod +x clash_meta
+
+      - name: 检查并生成 ${{ matrix.mrs }}
+        run: |
+          if [ -f "${{ matrix.list }}" ]; then
+            echo "${{ matrix.list }} 存在 → 开始生成 ${{ matrix.mrs }}"
+            ./clash_meta convert-ruleset domain text "${{ matrix.list }}" "${{ matrix.mrs }}"
+            echo "生成成功！"
+          else
+            echo "跳过：${{ matrix.list }} 不存在（正常）"
+            # 不 exit 0，直接继续，让 workflow 保持绿色
+          fi
+
+      - name: 提交 ${{ matrix.mrs }}（如果生成了才提交）
+        if: success() && contains(steps.*.outputs.*, '生成成功')
+        run: |
+          if [ -f "${{ matrix.mrs }}" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -f "${{ matrix.mrs }}"
+            git commit -m "chore: update ${{ matrix.mrs }} $(date -u +%Y-%m-%d %H:%M)" || echo "no change"
+            git push origin main
+          fi
+
+  # 最终提示（一个文件都没找到时）
+  nothing:
+    needs: [download-kernel, update-all]
+    if: always() && (needs.update-all.result == 'skipped' || needs.update-all.result == 'success' && !contains(needs.update-all.outputs.*, '生成成功'))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: 下载 Clash Meta 内核
-        run: # 同上
-      - name: 生成 apple.mrs（已确认文件存在）
-        run: ./clash_meta convert-ruleset domain text apple.list apple.mrs
-      - name: 提交
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f apple.mrs
-          git commit -m "chore: update apple.mrs $(date -u +%Y-%m-%d %H:%M)" || echo "no change"
-          git push origin main
-
-  # 可选：如果啥都没干，给个友好提示
-  nothing-to-do:
-    needs: check-files
-    if: ${{ needs.check-files.outputs.should_run == 'false' }}
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "仓库里一个 .list 文件都没找到，啥也不用干了～"
+      - run: echo "一个可用的 .list 文件都没找到，啥也没干～（正常现象）"
