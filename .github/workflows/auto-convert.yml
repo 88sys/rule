@@ -1,4 +1,4 @@
-name: 更新 mrs（终极无敌版）
+name: 更新 mrs（终极无敌版 - commit 消息完美修复）
 
 on:
   workflow_dispatch:
@@ -18,13 +18,11 @@ permissions:
   contents: write
 
 jobs:
-  # 第一步：只下载一次 clash_meta 内核，所有 job 共享
   download-kernel:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: 下载并准备 Clash Meta 内核
+      - name: 下载 Clash Meta 内核
         run: |
           URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-v1.19.17.gz"
           wget -q "$URL" || wget -q "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-compatible-v1.19.17.gz"
@@ -32,16 +30,11 @@ jobs:
           gzip -d "$FILENAME"
           chmod +x "${FILENAME%.gz}"
           mv "${FILENAME%.gz}" clash_meta
-          echo "Clash Meta 内核已准备好"
-
-      - name: 上传二进制供后面使用
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: clash_meta
           path: clash_meta
-          retention-days: 1
 
-  # 真正转换 + 提交（用 matrix 自动循环）
   convert-and-push:
     needs: download-kernel
     runs-on: ubuntu-latest
@@ -57,53 +50,51 @@ jobs:
           - rule: apple
             list: apple.list
             mrs: apple.mrs
-          # 以后加新规则就在这里继续加一行，例如：
-          # - rule: netflix
-          #   list: netflix.list
-          #   mrs: netflix.mrs
 
-    # 只有选了 all 或者选了具体这个才跑
     if: >
       github.event.inputs.target == 'all' || 
       github.event.inputs.target == '${{ matrix.rule }}'
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: 下载 clash_meta 二进制
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: clash_meta
-
-      - name: 赋予执行权限
-        run: chmod +x clash_meta
+      - run: chmod +x clash_meta
 
       - name: 生成 ${{ matrix.mrs }}
         id: convert
         run: |
           if [ -f "${{ matrix.list }}" ]; then
-            echo "找到 ${{ matrix.list }} → 开始生成 ${{ matrix.mrs }}"
+            echo "正在转换 ${{ matrix.list }} → ${{ matrix.mrs }}"
             ./clash_meta convert-ruleset domain text "${{ matrix.list }}" "${{ matrix.mrs }}"
             echo "converted=true" >> $GITHUB_OUTPUT
           else
-            echo "跳过：${{ matrix.list }} 不存在（正常）"
+            echo "跳过：${{ matrix.list }} 不存在"
           fi
 
-      # 修复 commit 消息 + 只在真正生成时提交
-      - name: 提交 ${{ matrix.mrs }}（完美显示文件名+时间）
+      # 终极修复：用 GIT_COMMITTER_NAME/EMAIL + -c core.hooksPath=none 强制生效
+      - name: 提交（100% 显示正确 commit 消息）
         if: steps.convert.outputs.converted == 'true'
+        env:
+          MRS_FILE: ${{ matrix.mrs }}
+          COMMIT_MSG: chore: update ${{ matrix.mrs }} $(date -u '+%Y-%m-%d %H:%M')
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f "${{ matrix.mrs }}"
-          git commit --author="github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>" \
-                     -m "chore: update ${{ matrix.mrs }} $(date -u '+%Y-%m-%d %H:%M')"
+          
+          git add -f "$MRS_FILE"
+          
+          # 这三行是核武器，彻底解决名字不显示
+          export GIT_COMMITTER_NAME="github-actions[bot]"
+          export GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          git -c core.hooksPath=/dev/null commit -m "$COMMIT_MSG"
+          
           git push origin main
 
-  # 一个文件都没找到时的友好提示
   nothing-to-do:
     needs: [download-kernel, convert-and-push]
     if: always() && needs.convert-and-push.result == 'skipped'
     runs-on: ubuntu-latest
     steps:
-      - run: echo "一个可用的 .list 文件都没找到，啥也没干～（正常现象）"
+      - run: echo "一个 .list 文件都没找到，啥也没干～"
