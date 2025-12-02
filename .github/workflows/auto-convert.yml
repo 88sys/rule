@@ -1,23 +1,33 @@
-name: 自动转换 cn_domain-extra.list → cn_domain-extra.mrs
+name: .list 更新到 .mrs（默认一键全量，可单选）
 
 on:
-  push:
-    paths:
-      - 'cn_domain-extra.list'
-  #schedule:
-  #  - cron: '0 3 * * *'
   workflow_dispatch:
+    inputs:
+      target:
+        description: '选择要更新的规则集'
+        required: true
+        type: choice
+        default: all
+        options:
+          - all               # 一键更新全部（默认）
+          - cn_domain-extra
+          - proxy
+          - apple             # 已经给你加上
 
-permissions:  # ← 新加这几行：开启 write 权限（解决 403）
+permissions:
   contents: write
 
 jobs:
-  convert:
+  # ==================== cn_domain-extra ====================
+  update-cn:
+    if: >-
+      github.event.inputs.target == 'all' || 
+      github.event.inputs.target == 'cn_domain-extra'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: 下载 Clash Meta 内核（永不 404 版）
+      - name: 下载 Clash Meta 内核
         run: |
           URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-v1.19.17.gz"
           wget -q "$URL" || wget -q "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-compatible-v1.19.17.gz"
@@ -25,18 +35,70 @@ jobs:
           gzip -d "$FILENAME"
           chmod +x "${FILENAME%.gz}"
           mv "${FILENAME%.gz}" clash_meta
-          echo "Clash Meta 下载完成"
 
       - name: 生成 cn_domain-extra.mrs
-        run: |
-          ./clash_meta convert-ruleset domain text cn_domain-extra.list cn_domain-extra.mrs
-          echo "转换完成，共 $(wc -l < cn_domain-extra.mrs) 行"
+        run: ./clash_meta convert-ruleset domain text cn_domain-extra.list cn_domain-extra.mrs
 
-      - name: 强制提交 mrs 文件到仓库
+      - name: 提交 cn_domain-extra.mrs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f cn_domain-extra.mrs
-          git commit -m "chore: auto update cn_domain-extra.mrs $(date -u +%Y-%m-%d\ %H:%M)" || echo "nothing to commit"
+          git commit -m "chore: update cn_domain-extra.mrs $(date -u +%Y-%m-%d %H:%M)" || echo "no change"
           git push origin main
-          echo "mrs 已强制推送到仓库根目录"
+
+  # ==================== proxy ====================
+  update-proxy:
+    if: >-
+      github.event.inputs.target == 'all' || 
+      github.event.inputs.target == 'proxy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下载 Clash Meta 内核
+        run: |
+          URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-v1.19.17.gz"
+          wget -q "$URL" || wget -q "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-compatible-v1.19.17.gz"
+          FILENAME=$(ls *.gz)
+          gzip -d "$FILENAME"
+          chmod +x "${FILENAME%.gz}"
+          mv "${FILENAME%.gz}" clash_meta
+
+      - name: 生成 proxy.mrs
+        run: ./clash_meta convert-ruleset domain text proxy.list proxy.mrs
+
+      - name: 提交 proxy.mrs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f proxy.mrs
+          git commit -m "chore: update proxy.mrs $(date -u +%Y-%m-%d %H:%M)" || echo "no change"
+          git push origin main
+
+  # ==================== apple ====================
+  update-apple:
+    if: >-
+      github.event.inputs.target == 'all' || 
+      github.event.inputs.target == 'apple'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下载 Clash Meta 内核
+        run: |
+          URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-v1.19.17.gz"
+          wget -q "$URL" || wget -q "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-compatible-v1.19.17.gz"
+          FILENAME=$(ls *.gz)
+          gzip -d "$FILENAME"
+          chmod +x "${FILENAME%.gz}"
+          mv "${FILENAME%.gz}" clash_meta
+
+      - name: 生成 apple.mrs
+        run: ./clash_meta convert-ruleset domain text apple.list apple.mrs   # ← 对应你的 apple.list
+
+      - name: 提交 apple.mrs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f apple.mrs
+          git commit -m "chore: update apple.mrs $(date -u +%Y-%m-%d %H:%M)" || echo "no change"
+          git push origin main
