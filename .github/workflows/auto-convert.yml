@@ -5,6 +5,8 @@ on:
     paths:
       - 'cn_domain-extra.list'
       - 'proxy-extra.list'
+      - 'cn_domain-extra.mrs'      # 新增：删了 mrs 也能自动重建
+      - 'proxy-extra.mrs'          # 新增
   workflow_dispatch:
     inputs:
       target:
@@ -26,9 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 确保能拿到历史 hash 文件
+          fetch-depth: 0
 
-      - name: 下载 Clash Meta 内核（永不404）
+      - name: 下载 Clash Meta 内核（防 404）
         run: |
           URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-v1.19.17.gz"
           wget -q "$URL" || wget -q "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-compatible-v1.19.17.gz"
@@ -46,7 +48,7 @@ jobs:
             ./clash_meta convert-ruleset domain text cn_domain-extra.list cn_domain-extra.mrs
             echo "cn_domain-extra.mrs 生成完成"
           else
-            echo "cn_domain-extra.list 不存在，跳过生成"
+            echo "cn_domain-extra.list 不存在，跳过"
           fi
 
       # ============ 生成 proxy-extra.mrs ============
@@ -58,11 +60,11 @@ jobs:
             ./clash_meta convert-ruleset domain text proxy-extra.list proxy-extra.mrs
             echo "proxy-extra.mrs 生成完成"
           else
-            echo "proxy-extra.list 不存在，跳过生成"
+            echo "proxy-extra.list 不存在，跳过"
           fi
 
-      # ============ 智能提交：只有真正变化才 push ============
-      - name: 智能提交（仅当 mrs 内容变化时才真正推送）
+      # ============ 终极智能提交：只有真正变化才 push（最简最稳）============
+      - name: 智能提交（仅在 mrs 内容真正变化时才 commit + push）
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -70,63 +72,18 @@ jobs:
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M")
           TARGET="${{ inputs.target }}"
 
-          CHANGED=0   # 是否有实质内容变化
+          # 先把可能变化的文件加入暂存区
+          git add cn_domain-extra.mrs proxy-extra.mrs 2>/dev/null || true
 
-          # 检查 cn_domain-extra.mrs
-          if [ -f cn_domain-extra.mrs ]; then
-            NEW_HASH=$(sha256sum cn_domain-extra.mrs | cut -d' ' -f1)
-            HASH_FILE=".git/cn_domain-extra.mrs.hash"
-
-            if [ -f "$HASH_FILE" ]; then
-              OLD_HASH=$(cat "$HASH_FILE")
-              if [ "$OLD_HASH" != "$NEW_HASH" ]; then
-                echo "cn_domain-extra.mrs 内容已更新"
-                CHANGED=1
-              else
-                echo "cn_domain-extra.mrs 内容无变化"
-              fi
-            else
-              echo "首次生成 cn_domain-extra.mrs"
-              CHANGED=1
-            fi
-
-            echo "$NEW_HASH" > "$HASH_FILE"
-            git add cn_domain-extra.mrs
+          # 神之一手：让 git 自己判断是否有实质变化（最可靠！）
+          if git diff --cached --quiet; then
+            echo "规则文件内容无任何变化，跳过提交，仓库保持绝对安静"
+            echo "last_run=$TIMESTAMP (no change, target: $TARGET)" >> $GITHUB_ENV
+            exit 0
           fi
 
-          # 检查 proxy-extra.mrs
-          if [ -f proxy-extra.mrs ]; then
-            NEW_HASH=$(sha256sum proxy-extra.mrs | cut -d' ' -f1)
-            HASH_FILE=".git/proxy-extra.mrs.hash"
-
-            if [ -f "$HASH_FILE" ]; then
-              OLD_HASH=$(cat "$HASH_FILE")
-              if [ "$OLD_HASH" != "$NEW_HASH" ]; then
-                echo "proxy-extra.mrs 内容已更新"
-                CHANGED=1
-              else
-                echo "proxy-extra.mrs 内容无变化"
-              fi
-            else
-              echo "首次生成 proxy-extra.mrs"
-              CHANGED=1
-            fi
-
-            echo "$NEW_HASH" > "$HASH_FILE"
-            git add proxy-extra.mrs
-          fi
-
-          # 总是更新心跳文件（仅用于本地记录）
-          echo "{\"last_run\": \"$TIMESTAMP\", \"target\": \"$TARGET\"}" > last-run.json
-          git add last-run.json
-
-          # 只有真正有变化才 commit + push
-          if [ $CHANGED -eq 1 ]; then
-            git commit -m "chore: update ruleset(s) $TIMESTAMP (target: $TARGET)"
-            git push origin main
-            echo "检测到规则内容变更，已提交并推送"
-          else
-            git commit -m "chore: workflow heartbeat $TIMESTAMP (no change, target: $TARGET)" || true
-            echo "无实质内容变化，仅记录本地心跳（未推送）"
-            echo "仓库保持安静，完美！"
-          fi
+          # 到这里说明真的有变化，才提交
+          git commit -m "chore: auto update ruleset(s) $TIMESTAMP (target: $TARGET)"
+          git push origin main
+          echo "检测到规则内容变更，已成功提交并推送"
+          echo "last_run=$TIMESTAMP (updated, target: $TARGET)" >> $GITHUB_ENV
