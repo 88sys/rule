@@ -1,5 +1,4 @@
 name: 自动转换 list → mrs
-
 on:
   push:
     paths:
@@ -13,19 +12,16 @@ on:
         type: choice
         default: both
         options:
-          - both              # 两个都转（默认）
-          - cn_domain-extra   # 只转国内直连
-          - proxy-extra       # 只转代理规则
-
+          - both # 两个都转（默认）
+          - cn_domain-extra # 只转国内直连
+          - proxy-extra # 只转代理规则
 permissions:
   contents: write
-
 jobs:
   convert:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: 下载 Clash Meta 内核（永不404）
         run: |
           URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-v1.19.17.gz"
@@ -34,7 +30,6 @@ jobs:
           gzip -d "$FILENAME"
           chmod +x "${FILENAME%.gz}"
           mv "${FILENAME%.gz}" clash_meta
-
       # ============ 生成 cn_domain-extra.mrs（智能容错）============
       - name: 生成 cn_domain-extra.mrs
         if: inputs.target == 'both' || inputs.target == 'cn_domain-extra'
@@ -45,7 +40,6 @@ jobs:
           else
             echo "cn_domain-extra.list 不存在，已跳过（正常）"
           fi
-
       # ============ 生成 proxy-extra.mrs（智能容错）============
       - name: 生成 proxy-extra.mrs
         if: inputs.target == 'both' || inputs.target == 'proxy-extra'
@@ -56,29 +50,33 @@ jobs:
           else
             echo "proxy-extra.list 不存在，已跳过（正常）"
           fi
-
-      # ============ 统一提交（完美显示文件名+时间）============
-      - name: 提交所有生成的 mrs 文件
+      # ============ 提交所有生成的 mrs 文件 + 心跳更新（优化版）============
+      - name: 提交所有生成的 mrs 文件 + 心跳更新
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # 检查并提交 cn
-          if [ -f cn_domain-extra.mrs ]; then
+          # 处理 cn_domain-extra.mrs（仅变化时 commit）
+          if [ -f cn_domain-extra.mrs ] && ! git diff --quiet -- cn_domain-extra.mrs; then
             git add -f cn_domain-extra.mrs
-            git commit -m "chore: auto update cn_domain-extra.mrs $(date -u +%Y-%m-%d\ %H:%M)" || true
-          fi
-
-          # 检查并提交 proxy-extra
-          if [ -f proxy-extra.mrs ]; then
-            git add -f proxy-extra.mrs
-            git commit -m "chore: auto update proxy-extra.mrs $(date -u +%Y-%m-%d\ %H:%M)" || true
-          fi
-
-          # 只要有任意一个提交了就 push
-          if git log -1 --pretty=%B | grep -q "chore: auto update"; then
-            git push origin main
-            echo "已成功推送更新"
+            git commit -m "chore: update cn_domain-extra.mrs $(date -u +%Y-%m-%d %H:%M)"
+            echo "已 commit cn_domain-extra.mrs"
           else
-            echo "没有文件需要提交"
+            echo "cn_domain-extra.mrs 无变化或不存在，跳过"
           fi
+          # 处理 proxy-extra.mrs（仅变化时 commit）
+          if [ -f proxy-extra.mrs ] && ! git diff --quiet -- proxy-extra.mrs; then
+            git add -f proxy-extra.mrs
+            git commit -m "chore: update proxy-extra.mrs $(date -u +%Y-%m-%d %H:%M)"
+            echo "已 commit proxy-extra.mrs"
+          else
+            echo "proxy-extra.mrs 无变化或不存在，跳过"
+          fi
+          # 心跳：总是更新 last-run.json（记录最新运行时间）
+          TIMESTAMP=$(date -u +%Y-%m-%d\ %H:%M)
+          TARGET="${{ inputs.target }}"
+          echo "{\"last_run\": \"$TIMESTAMP\", \"target\": \"$TARGET\"}" > last-run.json
+          git add -f last-run.json
+          git commit -m "chore: workflow heartbeat $TIMESTAMP (target: $TARGET)" || true
+          # 总是 push（心跳确保有变更）
+          git push origin main
+          echo "已推送：心跳时间 $TIMESTAMP (target: $TARGET)"
