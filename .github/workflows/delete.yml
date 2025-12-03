@@ -1,17 +1,20 @@
-name: Clear old workflow runs
-
+name: Delete old workflow runs
 on:
-  workflow_dispatch:           # 手动触发
   schedule:
-    - cron: '0 * * * *'       # 每小时自动运行一次
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
 
 jobs:
-  clear_runs:
+  delete-runs:
     runs-on: ubuntu-latest
     steps:
       - name: Delete workflow runs
-        uses: GitRML/delete-workflow-runs@main
+        uses: Mattraks/delete-workflow-runs@v2
         with:
-          token: ${{ secrets.AUTH_PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          retain_days: 0       # 0 = 删除所有可删除的 run
+          # 以下参数确保当前运行不会被删除
+          retain_days: 0
+          keep_minimum_runs: 5
+          delete_workflow_pattern: '.*'  # 匹配所有工作流
+          dry_run: false
