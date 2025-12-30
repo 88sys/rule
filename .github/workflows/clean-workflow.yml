@@ -171,6 +171,6 @@ jobs:
 #
 # 4. 使用 AUTH_PAT - 可以直接复制到任何仓库
 #    secrets.AUTH_PAT
-#    使用 GITHUB_TOKEN - 仅限当前仓库，无跨项目权限
+#    使用 GITHUB_TOKEN - 仅限当前仓库，无跨项目权限，是 GitHub Actions 运行时自动生成的临时 token
 #    secrets.GITHUB_TOKEN
 # ========================================
