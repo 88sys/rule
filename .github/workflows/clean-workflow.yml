@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       keep_days:
-        description: "保留最近多少天（0=全部清理，默认0）"
+        description: "保留最近多少天（0=全部清理，默认7）"
         required: false
-        default: "0"
+        default: "7"
       repository:
         description: "要清理的仓库（格式：owner/repo，留空为当前仓库）"
         required: false
@@ -43,8 +43,14 @@ jobs:
           EXCLUDE_CURRENT: ${{ github.event.inputs.exclude_current }}
           TARGET_REPO: ${{ steps.set-repo.outputs.repository }}
         run: |
-          : "${KEEP_DAYS:=0}"
+          # 设置默认值
+          : "${KEEP_DAYS:=7}"
           : "${EXCLUDE_CURRENT:=true}"
+          
+          echo "🔧 参数配置："
+          echo "  - 保留天数: $KEEP_DAYS"
+          echo "  - 排除当前运行: $EXCLUDE_CURRENT"
+          echo "  - 目标仓库: $TARGET_REPO"
           
           # 构建基础查询条件（只清理已完成的工作流）
           JQ_FILTER='.workflow_runs[] | select(.status=="completed")'
@@ -67,12 +73,14 @@ jobs:
           fi
           
           echo "🎯 目标仓库：$TARGET_REPO"
+          echo "🔍 开始获取待清理的运行..."
           
-          # 获取待删除的运行ID
-          page=1
+          # 初始化计数变量
           TOTAL_DELETED=0
           TOTAL_FAILED=0
+          page=1
           
+          # 主循环
           while true; do
             echo "📄 正在获取第 $page 页..."
             
@@ -82,25 +90,28 @@ jobs:
                           "https://api.github.com/repos/$TARGET_REPO/actions/runs?per_page=100&page=$page")
             
             # 检查响应是否有效
-            if echo "$RESPONSE" | jq -e '.workflow_runs' > /dev/null 2>&1; then
-              RUN_IDS=$(echo "$RESPONSE" | jq -r "$JQ_FILTER | .id")
-            else
+            if ! echo "$RESPONSE" | jq -e '.workflow_runs' > /dev/null 2>&1; then
               echo "❌ API 响应异常，可能仓库不存在或无权限"
-              echo "响应内容：$RESPONSE"
+              echo "响应内容："
+              echo "$RESPONSE" | head -100
               break
             fi
             
-            # 如果没有数据，跳出循环
-            if [ -z "$RUN_IDS" ]; then
+            # 获取当前页的运行ID
+            RUN_IDS=$(echo "$RESPONSE" | jq -r "$JQ_FILTER | .id" | tr '\n' ' ')
+            
+            # 如果没有数据，检查是否还有更多页
+            if [ -z "$RUN_IDS" ] || [ "$RUN_IDS" = " " ]; then
               echo "✅ 第 $page 页没有可删除的运行"
-              # 检查是否还有更多页
               TOTAL_COUNT=$(echo "$RESPONSE" | jq '.total_count // 0')
               TOTAL_PROCESSED=$(( (page-1) * 100 ))
               if [ $TOTAL_PROCESSED -ge $TOTAL_COUNT ]; then
-                echo "📊 已处理所有记录"
+                echo "📊 已处理完所有 $TOTAL_COUNT 个记录"
                 break
               fi
             else
+              # 清理RUN_IDS（去除多余空格）
+              RUN_IDS=$(echo "$RUN_IDS" | xargs)
               COUNT=$(echo "$RUN_IDS" | wc -w)
               echo "🗑️ 第 $page 页发现 $COUNT 个待删除运行"
               
@@ -117,19 +128,18 @@ jobs:
               for RUN_ID in $RUN_IDS; do
                 echo "  正在删除运行 ID: $RUN_ID"
                 
-                DELETE_RESPONSE=$(curl -s -X DELETE \
+                DELETE_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
                   -H "Authorization: token ${{ secrets.AUTH_PAT }}" \
                   -H "Accept: application/vnd.github.v3+json" \
                   "https://api.github.com/repos/$TARGET_REPO/actions/runs/$RUN_ID")
                 
                 # 检查删除是否成功（204 No Content 表示成功）
-                if [ $? -eq 0 ]; then
+                if [ "$DELETE_RESPONSE" = "204" ]; then
                   echo "    ✅ 删除成功"
-                  ((DELETED_THIS_PAGE++))
+                  DELETED_THIS_PAGE=$((DELETED_THIS_PAGE + 1))
                 else
-                  echo "    ❌ 删除失败"
-                  echo "    错误信息：$DELETE_RESPONSE"
-                  ((FAILED_THIS_PAGE++))
+                  echo "    ❌ 删除失败 (HTTP $DELETE_RESPONSE)"
+                  FAILED_THIS_PAGE=$((FAILED_THIS_PAGE + 1))
                 fi
                 
                 # 添加延迟避免速率限制
@@ -149,13 +159,19 @@ jobs:
           echo "🎉 清理完成！"
           echo "📈 总计：成功删除 $TOTAL_DELETED 个运行，失败 $TOTAL_FAILED 个"
           
-          # 如果全部失败，可能权限有问题
+          # 如果全部失败且尝试了删除，可能权限有问题
           if [ $TOTAL_DELETED -eq 0 ] && [ $TOTAL_FAILED -gt 0 ]; then
             echo "❌ 所有删除都失败了！请检查："
-            echo "   1. AUTH_PAT 是否有足够权限"
+            echo "   1. AUTH_PAT 是否有足够权限（需要 repo 权限）"
             echo "   2. 仓库名称是否正确"
             echo "   3. 网络连接是否正常"
+            echo "   4. 检查 PAT 是否过期"
             exit 1
+          fi
+          
+          # 如果没有任何操作
+          if [ $TOTAL_DELETED -eq 0 ] && [ $TOTAL_FAILED -eq 0 ]; then
+            echo "✅ 没有需要清理的运行"
           fi
       
       - name: 生成清理报告
@@ -164,7 +180,7 @@ jobs:
           echo "📋 清理报告" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "**目标仓库**: ${{ steps.set-repo.outputs.repository }}" >> $GITHUB_STEP_SUMMARY
-          echo "**保留天数**: ${{ github.event.inputs.keep_days || 0 }}" >> $GITHUB_STEP_SUMMARY
+          echo "**保留天数**: ${{ github.event.inputs.keep_days || 7 }}" >> $GITHUB_STEP_SUMMARY
           echo "**排除当前运行**: ${{ github.event.inputs.exclude_current || 'true' }}" >> $GITHUB_STEP_SUMMARY
           echo "**触发方式**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
