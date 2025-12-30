@@ -1,0 +1,171 @@
+name: Cleanup Workflow Runs
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # 每周日0点运行
+  workflow_dispatch:
+    inputs:
+      keep_days:
+        description: "保留最近多少天（0=全部清理，默认0）"
+        required: false
+        default: "0"
+      repository:
+        description: "要清理的仓库（格式：owner/repo，留空为当前仓库）"
+        required: false
+        default: ""
+      exclude_current:
+        description: "排除正在运行的工作流"
+        required: false
+        default: "true"
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+      
+      - name: 设置目标仓库
+        id: set-repo
+        run: |
+          if [ -z "${{ github.event.inputs.repository }}" ]; then
+            echo "repository=${{ github.repository }}" >> $GITHUB_OUTPUT
+            echo "🔍 将清理当前仓库：${{ github.repository }}"
+          else
+            echo "repository=${{ github.event.inputs.repository }}" >> $GITHUB_OUTPUT
+            echo "🔍 将清理指定仓库：${{ github.event.inputs.repository }}"
+          fi
+      
+      - name: 清理工作流运行
+        env:
+          KEEP_DAYS: ${{ github.event.inputs.keep_days }}
+          EXCLUDE_CURRENT: ${{ github.event.inputs.exclude_current }}
+          TARGET_REPO: ${{ steps.set-repo.outputs.repository }}
+        run: |
+          : "${KEEP_DAYS:=0}"
+          : "${EXCLUDE_CURRENT:=true}"
+          
+          # 构建基础查询条件（只清理已完成的工作流）
+          JQ_FILTER='.workflow_runs[] | select(.status=="completed")'
+          
+          # 排除当前运行（如果启用）
+          if [ "$EXCLUDE_CURRENT" = "true" ] && [ "$TARGET_REPO" = "${{ github.repository }}" ]; then
+            JQ_FILTER="$JQ_FILTER | select(.id != ${{ github.run_id }})"
+            echo "⚠️ 已排除当前运行的工作流（ID: ${{ github.run_id }}）"
+          fi
+          
+          # 如果设置了保留天数，添加时间筛选
+          if [ "$KEEP_DAYS" -gt 0 ]; then
+            THRESHOLD=$(date -u -d "${KEEP_DAYS} days ago" '+%Y-%m-%dT%H:%M:%SZ')
+            echo "📅 保留最近 $KEEP_DAYS 天的运行记录"
+            echo "⏰ 阈值时间(UTC)：$THRESHOLD"
+            JQ_FILTER="$JQ_FILTER | select(.created_at < \"$THRESHOLD\")"
+          else
+            echo "⚠️ 警告：将清理所有已完成的工作流运行"
+            echo "⚠️ 注意：只会删除状态为 'completed' 的运行"
+          fi
+          
+          echo "🎯 目标仓库：$TARGET_REPO"
+          
+          # 获取待删除的运行ID
+          page=1
+          TOTAL_DELETED=0
+          TOTAL_FAILED=0
+          
+          while true; do
+            echo "📄 正在获取第 $page 页..."
+            
+            # 使用 GitHub API 获取工作流运行
+            RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.AUTH_PAT }}" \
+                          -H "Accept: application/vnd.github.v3+json" \
+                          "https://api.github.com/repos/$TARGET_REPO/actions/runs?per_page=100&page=$page")
+            
+            # 检查响应是否有效
+            if echo "$RESPONSE" | jq -e '.workflow_runs' > /dev/null 2>&1; then
+              RUN_IDS=$(echo "$RESPONSE" | jq -r "$JQ_FILTER | .id")
+            else
+              echo "❌ API 响应异常，可能仓库不存在或无权限"
+              echo "响应内容：$RESPONSE"
+              break
+            fi
+            
+            # 如果没有数据，跳出循环
+            if [ -z "$RUN_IDS" ]; then
+              echo "✅ 第 $page 页没有可删除的运行"
+              # 检查是否还有更多页
+              TOTAL_COUNT=$(echo "$RESPONSE" | jq '.total_count // 0')
+              TOTAL_PROCESSED=$(( (page-1) * 100 ))
+              if [ $TOTAL_PROCESSED -ge $TOTAL_COUNT ]; then
+                echo "📊 已处理所有记录"
+                break
+              fi
+            else
+              COUNT=$(echo "$RUN_IDS" | wc -w)
+              echo "🗑️ 第 $page 页发现 $COUNT 个待删除运行"
+              
+              # 安全确认（仅在手动触发且数量大时）
+              if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$page" -eq 1 ] && [ "$COUNT" -gt 50 ]; then
+                echo "⏸️  发现超过50个运行，暂停5秒..."
+                sleep 5
+              fi
+              
+              # 删除当前页的运行
+              DELETED_THIS_PAGE=0
+              FAILED_THIS_PAGE=0
+              
+              for RUN_ID in $RUN_IDS; do
+                echo "  正在删除运行 ID: $RUN_ID"
+                
+                DELETE_RESPONSE=$(curl -s -X DELETE \
+                  -H "Authorization: token ${{ secrets.AUTH_PAT }}" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/$TARGET_REPO/actions/runs/$RUN_ID")
+                
+                # 检查删除是否成功（204 No Content 表示成功）
+                if [ $? -eq 0 ]; then
+                  echo "    ✅ 删除成功"
+                  ((DELETED_THIS_PAGE++))
+                else
+                  echo "    ❌ 删除失败"
+                  echo "    错误信息：$DELETE_RESPONSE"
+                  ((FAILED_THIS_PAGE++))
+                fi
+                
+                # 添加延迟避免速率限制
+                sleep 0.3
+              done
+              
+              TOTAL_DELETED=$((TOTAL_DELETED + DELETED_THIS_PAGE))
+              TOTAL_FAILED=$((TOTAL_FAILED + FAILED_THIS_PAGE))
+              
+              echo "📊 第 $page 页完成：成功 $DELETED_THIS_PAGE，失败 $FAILED_THIS_PAGE"
+            fi
+            
+            # 继续下一页
+            page=$((page + 1))
+          done
+          
+          echo "🎉 清理完成！"
+          echo "📈 总计：成功删除 $TOTAL_DELETED 个运行，失败 $TOTAL_FAILED 个"
+          
+          # 如果全部失败，可能权限有问题
+          if [ $TOTAL_DELETED -eq 0 ] && [ $TOTAL_FAILED -gt 0 ]; then
+            echo "❌ 所有删除都失败了！请检查："
+            echo "   1. AUTH_PAT 是否有足够权限"
+            echo "   2. 仓库名称是否正确"
+            echo "   3. 网络连接是否正常"
+            exit 1
+          fi
+      
+      - name: 生成清理报告
+        if: always()
+        run: |
+          echo "📋 清理报告" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**目标仓库**: ${{ steps.set-repo.outputs.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "**保留天数**: ${{ github.event.inputs.keep_days || 0 }}" >> $GITHUB_STEP_SUMMARY
+          echo "**排除当前运行**: ${{ github.event.inputs.exclude_current || 'true' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**触发方式**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ 工作流已执行完成" >> $GITHUB_STEP_SUMMARY
