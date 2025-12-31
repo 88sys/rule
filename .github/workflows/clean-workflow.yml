@@ -95,16 +95,19 @@ jobs:
           echo "repositories=$ALL_REPOS" >> $GITHUB_OUTPUT
           echo "🔍 共找到 $REPO_COUNT 个仓库"
 
-      - name: 过滤有workflow文件的仓库（优化版）
-        if: steps.set-repos.outputs.mode == 'all' && always()
+      - name: 过滤有workflow文件的仓库（修复版）
+        if: steps.set-repos.outputs.mode == 'all'
         id: filter-workflow-repos
         run: |
           echo "🔍 过滤有 .github/workflows/ 文件的仓库（更准确）..."
           
+          # 初始化变量
           IFS=',' read -ra ALL_REPOS <<< "${{ steps.get-all-repos.outputs.repositories }}"
           ACTIVE_REPOS=""
           CHECKED_COUNT=0
           TOTAL_TO_CHECK=${#ALL_REPOS[@]}
+          
+          echo "📊 总共需要检查 $TOTAL_TO_CHECK 个仓库"
           
           for REPO in "${ALL_REPOS[@]}"; do
             ((CHECKED_COUNT++))
@@ -116,53 +119,58 @@ jobs:
             # 尝试获取仓库的默认分支，然后检查该分支下是否有 .github/workflows 目录
             HAS_WORKFLOW=0
             
-            # 首先获取仓库信息以得到默认分支
+            # 首先获取仓库信息以得到默认分支（添加错误处理）
             REPO_INFO=$(curl -s -H "Authorization: token ${{ secrets.AUTH_PAT }}" \
-                         "https://api.github.com/repos/$REPO")
+                         "https://api.github.com/repos/$REPO" 2>/dev/null || echo '{"message": "error"}')
             
-            DEFAULT_BRANCH=$(echo "$REPO_INFO" | jq -r '.default_branch // "main"')
-            
-            if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != "null" ]; then
-              # 检查默认分支是否有 .github/workflows 目录
-              # 使用 contents API 检查目录是否存在
-              WORKFLOWS_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.AUTH_PAT }}" \
-                                 "https://api.github.com/repos/$REPO/contents/.github/workflows?ref=$DEFAULT_BRANCH")
+            # 检查是否成功获取仓库信息
+            if echo "$REPO_INFO" | jq -e '.id' > /dev/null 2>&1; then
+              DEFAULT_BRANCH=$(echo "$REPO_INFO" | jq -r '.default_branch // "main"')
               
-              # 检查响应是否是目录（type == "dir"）或者有文件列表
-              RESPONSE_TYPE=$(echo "$WORKFLOWS_RESPONSE" | jq -r 'type')
-              
-              if [ "$RESPONSE_TYPE" = "array" ]; then
-                # 如果是数组，说明目录存在且有文件
-                HAS_WORKFLOW=1
-              elif echo "$WORKFLOWS_RESPONSE" | jq -e '.type' > /dev/null 2>&1; then
-                TYPE=$(echo "$WORKFLOWS_RESPONSE" | jq -r '.type')
-                if [ "$TYPE" = "dir" ]; then
+              if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != "null" ]; then
+                # 检查默认分支是否有 .github/workflows 目录
+                # 使用 contents API 检查目录是否存在
+                WORKFLOWS_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.AUTH_PAT }}" \
+                                   "https://api.github.com/repos/$REPO/contents/.github/workflows?ref=$DEFAULT_BRANCH" 2>/dev/null || echo '{"message": "error"}')
+                
+                # 检查响应是否是目录（type == "dir"）或者有文件列表
+                RESPONSE_TYPE=$(echo "$WORKFLOWS_RESPONSE" | jq -r 'type // "null"' 2>/dev/null || echo "null")
+                
+                if [ "$RESPONSE_TYPE" = "array" ]; then
+                  # 如果是数组，说明目录存在且有文件
                   HAS_WORKFLOW=1
-                fi
-              fi
-            fi
-            
-            # 如果还没有找到，尝试检查常见分支
-            if [ "$HAS_WORKFLOW" -eq 0 ]; then
-              for BRANCH in main master; do
-                if [ "$BRANCH" != "$DEFAULT_BRANCH" ]; then
-                  WORKFLOWS_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.AUTH_PAT }}" \
-                                     "https://api.github.com/repos/$REPO/contents/.github/workflows?ref=$BRANCH")
-                  
-                  RESPONSE_TYPE=$(echo "$WORKFLOWS_RESPONSE" | jq -r 'type')
-                  
-                  if [ "$RESPONSE_TYPE" = "array" ]; then
+                elif echo "$WORKFLOWS_RESPONSE" | jq -e '.type' > /dev/null 2>&1; then
+                  TYPE=$(echo "$WORKFLOWS_RESPONSE" | jq -r '.type // "null"')
+                  if [ "$TYPE" = "dir" ]; then
                     HAS_WORKFLOW=1
-                    break
-                  elif echo "$WORKFLOWS_RESPONSE" | jq -e '.type' > /dev/null 2>&1; then
-                    TYPE=$(echo "$WORKFLOWS_RESPONSE" | jq -r '.type')
-                    if [ "$TYPE" = "dir" ]; then
-                      HAS_WORKFLOW=1
-                      break
-                    fi
                   fi
                 fi
-              done
+              fi
+              
+              # 如果还没有找到，尝试检查常见分支
+              if [ "$HAS_WORKFLOW" -eq 0 ]; then
+                for BRANCH in main master; do
+                  if [ -z "$DEFAULT_BRANCH" ] || [ "$BRANCH" != "$DEFAULT_BRANCH" ]; then
+                    WORKFLOWS_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.AUTH_PAT }}" \
+                                       "https://api.github.com/repos/$REPO/contents/.github/workflows?ref=$BRANCH" 2>/dev/null || echo '{"message": "error"}')
+                    
+                    RESPONSE_TYPE=$(echo "$WORKFLOWS_RESPONSE" | jq -r 'type // "null"' 2>/dev/null || echo "null")
+                    
+                    if [ "$RESPONSE_TYPE" = "array" ]; then
+                      HAS_WORKFLOW=1
+                      break
+                    elif echo "$WORKFLOWS_RESPONSE" | jq -e '.type' > /dev/null 2>&1; then
+                      TYPE=$(echo "$WORKFLOWS_RESPONSE" | jq -r '.type // "null"')
+                      if [ "$TYPE" = "dir" ]; then
+                        HAS_WORKFLOW=1
+                        break
+                      fi
+                    fi
+                  fi
+                done
+              fi
+            else
+              echo "  ⚠️  无法访问仓库 $REPO（跳过）"
             fi
             
             if [ "$HAS_WORKFLOW" -eq 1 ]; then
@@ -173,16 +181,20 @@ jobs:
             fi
             
             # 添加延迟避免速率限制
-            sleep 0.2
+            sleep 0.3
           done
           
           # 移除末尾的逗号
           ACTIVE_REPOS=${ACTIVE_REPOS%,}
           
-          ACTIVE_COUNT=$(echo "$ACTIVE_REPOS" | tr ',' '\n' | wc -l)
+          ACTIVE_COUNT=0
+          if [ -n "$ACTIVE_REPOS" ]; then
+            ACTIVE_COUNT=$(echo "$ACTIVE_REPOS" | tr ',' '\n' | wc -l)
+          fi
+          
           echo "📊 在 $CHECKED_COUNT 个仓库中，$ACTIVE_COUNT 个包含 workflow 文件"
           
-          if [ -n "$ACTIVE_REPOS" ]; then
+          if [ -n "$ACTIVE_REPOS" ] && [ "$ACTIVE_COUNT" -gt 0 ]; then
             echo "使用过滤后的仓库列表（有workflow文件的）"
             echo "repositories=$ACTIVE_REPOS" >> $GITHUB_OUTPUT
           else
@@ -239,7 +251,7 @@ jobs:
            
             # 如果设置了保留天数，添加时间筛选
             if [ "$KEEP_DAYS" -gt 0 ]; then
-              THRESHOLD=$(date -u -d "${KEEP_DAYS} days ago" '+%Y-%m-%dT%H:%M:%SZ')
+              THRESHOLD=$(date -u -d "${KEEP_DAYS} days ago" '+%Y-%m-dT%H:%M:%SZ')
               echo "📅 保留最近 $KEEP_DAYS 天的运行记录"
               echo "⏰ 阈值时间(UTC)：$THRESHOLD"
               JQ_FILTER="$JQ_FILTER | select(.created_at < \"$THRESHOLD\")"
