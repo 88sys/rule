@@ -9,376 +9,171 @@ on:
     inputs:
       upstream_repos:
         description: |
-          要同步的源仓库：
-          - 留空: 仅同步当前仓库
-          - 单个: owner/repo
-          - 多个: owner1/repo1,owner2/repo2
-          - 所有: all（默认）
+          要同步的源仓库 (格式: owner/repo)
+          多个用逗号分隔，留空为当前仓库
+          输入 'all' 使用默认配置
         required: false
         default: 'all'
       force_sync:
         description: '强制同步（忽略时间检查）'
         type: boolean
         default: false
-      retry_count:
-        description: '失败重试次数'
-        type: choice
-        options:
-          - '0'
-          - '1'
-          - '2'
-          - '3'
-        default: '1'
 
+# 需要写权限来推送分支
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
-  sync-upstream:
+  sync-repository:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0
-        token: ${{ secrets.PAT_TOKEN }}
+        fetch-depth: 0  # 获取所有分支历史
         
     - name: Setup Git
       run: |
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-        git config --global pull.rebase false
-        git config --global http.postBuffer 524288000
-        git config --global core.compression 9
         
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y jq curl
-        
-    - name: Parse repository configuration
-      id: parse-config
+    - name: Determine upstream repository
+      id: get-upstream
       env:
-        DEFAULT_REPO_CONFIG: ${{ secrets.DEFAULT_REPO_CONFIG || '[]' }}
+        INPUT_REPOS: ${{ inputs.upstream_repos }}
       run: |
-        echo "🎯 开始解析仓库配置..."
+        echo "输入参数: '$INPUT_REPOS'"
         
-        INPUT_REPOS="${{ inputs.upstream_repos }}"
-        RETRY_COUNT=${{ inputs.retry_count }}
-        
-        echo "retry_count=$RETRY_COUNT" >> $GITHUB_OUTPUT
-        
-        echo "📥 输入参数: '$INPUT_REPOS'"
-        
-        # 情况1: 留空（仅同步当前仓库）
         if [ -z "$INPUT_REPOS" ]; then
-          echo "📦 输入为空，仅同步当前仓库"
+          echo "输入为空，使用当前仓库的上游"
           
+          # 对于 OpenClash 仓库，默认上游是 vernesong/OpenClash
           CURRENT_REPO="${{ github.repository }}"
           REPO_NAME=$(basename "$CURRENT_REPO")
           
-          # 对于 OpenClash，使用默认上游
           if [ "$REPO_NAME" == "OpenClash" ]; then
             UPSTREAM_REPO="vernesong/OpenClash"
           else
             # 尝试获取上游信息
-            API_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
+            API_RESPONSE=$(curl -s \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               "https://api.github.com/repos/$CURRENT_REPO" || echo "{}")
             
-            if echo "$API_RESPONSE" | jq -e '.parent' > /dev/null 2>&1; then
-              UPSTREAM_OWNER=$(echo "$API_RESPONSE" | jq -r '.parent.owner.login')
-              UPSTREAM_NAME=$(echo "$API_RESPONSE" | jq -r '.parent.name')
-              UPSTREAM_REPO="$UPSTREAM_OWNER/$UPSTREAM_NAME"
+            PARENT_REPO=$(echo "$API_RESPONSE" | jq -r '.parent.full_name // ""')
+            
+            if [ -n "$PARENT_REPO" ] && [ "$PARENT_REPO" != "null" ]; then
+              UPSTREAM_REPO="$PARENT_REPO"
             else
               UPSTREAM_REPO=""
             fi
           fi
           
-          CONFIG="[{\"fork\": \"$CURRENT_REPO\", \"upstream\": \"$UPSTREAM_REPO\", \"name\": \"$REPO_NAME\"}]"
-          echo "repo_config=$CONFIG" >> $GITHUB_OUTPUT
-          
-        # 情况2: 输入 'all'（同步所有配置的仓库）
-        elif [ "$INPUT_REPOS" == "all" ]; then
-          echo "🚀 输入 'all'，同步所有配置的仓库"
-          
-          if [ -n "$DEFAULT_REPO_CONFIG" ] && [ "$DEFAULT_REPO_CONFIG" != "[]" ]; then
-            echo "使用 DEFAULT_REPO_CONFIG 配置"
-            echo "repo_config=$DEFAULT_REPO_CONFIG" >> $GITHUB_OUTPUT
+          if [ -z "$UPSTREAM_REPO" ]; then
+            echo "⚠️ 无法自动检测上游仓库，请手动指定"
+            echo "UPSTREAM_REPO=" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ DEFAULT_REPO_CONFIG 未配置，同步当前仓库"
-            
-            CURRENT_REPO="${{ github.repository }}"
-            REPO_NAME=$(basename "$CURRENT_REPO")
-            UPSTREAM_REPO="vernesong/OpenClash"
-            
-            CONFIG="[{\"fork\": \"$CURRENT_REPO\", \"upstream\": \"$UPSTREAM_REPO\", \"name\": \"$REPO_NAME\"}]"
-            echo "repo_config=$CONFIG" >> $GITHUB_OUTPUT
+            echo "检测到上游: $UPSTREAM_REPO"
+            echo "UPSTREAM_REPO=$UPSTREAM_REPO" >> $GITHUB_OUTPUT
           fi
           
-        # 情况3: 输入具体的仓库
+        elif [ "$INPUT_REPOS" == "all" ]; then
+          echo "输入 'all'，使用默认配置"
+          # 对于 OpenClash，默认上游是 vernesong/OpenClash
+          echo "UPSTREAM_REPO=vernesong/OpenClash" >> $GITHUB_OUTPUT
+          
         else
-          echo "🎯 输入指定仓库: $INPUT_REPOS"
+          echo "使用指定仓库: $INPUT_REPOS"
           
-          IFS=',' read -ra REPO_ARRAY <<< "$INPUT_REPOS"
-          
-          CONFIG_ARRAY="[]"
-          for REPO in "${REPO_ARRAY[@]}"; do
-            REPO=$(echo "$REPO" | xargs)
-            
-            if [ -z "$REPO" ]; then
-              continue
-            fi
-            
-            if [[ ! "$REPO" =~ ^[^/]+/[^/]+$ ]]; then
-              echo "❌ 跳过无效格式: $REPO"
-              continue
-            fi
-            
-            OWNER=$(echo "$REPO" | cut -d'/' -f1)
-            REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
-            CURRENT_REPO="${{ github.repository }}"
-            
-            # 添加到配置
-            NEW_ENTRY="{\"fork\": \"$CURRENT_REPO\", \"upstream\": \"$REPO\", \"name\": \"$REPO_NAME\"}"
-            CONFIG_ARRAY=$(echo "$CONFIG_ARRAY" | jq ". + [$NEW_ENTRY]")
-          done
-          
-          echo "repo_config=$CONFIG_ARRAY" >> $GITHUB_OUTPUT
+          # 如果包含逗号，只取第一个
+          if [[ "$INPUT_REPOS" == *","* ]]; then
+            FIRST_REPO=$(echo "$INPUT_REPOS" | cut -d',' -f1 | xargs)
+            echo "多个仓库只同步第一个: $FIRST_REPO"
+            echo "UPSTREAM_REPO=$FIRST_REPO" >> $GITHUB_OUTPUT
+          else
+            echo "UPSTREAM_REPO=$INPUT_REPOS" >> $GITHUB_OUTPUT
+          fi
         fi
         
-        echo "✅ 配置解析完成"
-        
-    - name: Execute synchronization
-      id: sync-repos
+    - name: Sync from upstream
+      if: steps.get-upstream.outputs.UPSTREAM_REPO != ''
       env:
-        REPO_CONFIG: ${{ steps.parse-config.outputs.repo_config }}
+        UPSTREAM_REPO: ${{ steps.get-upstream.outputs.UPSTREAM_REPO }}
         FORCE_SYNC: ${{ inputs.force_sync }}
-        PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
-        RETRY_COUNT: ${{ steps.parse-config.outputs.retry_count }}
       run: |
-        echo "🚀 开始执行仓库同步..."
+        echo "开始同步上游仓库: $UPSTREAM_REPO"
         
-        # 解析配置
-        CONFIG="$REPO_CONFIG"
-        if [ -z "$CONFIG" ] || [ "$CONFIG" == "[]" ]; then
-          echo "⚠️ 没有需要同步的仓库"
-          echo "results=[]" >> $GITHUB_OUTPUT
+        # 添加上游远程仓库
+        git remote add upstream "https://github.com/$UPSTREAM_REPO.git" 2>/dev/null || \
+          git remote set-url upstream "https://github.com/$UPSTREAM_REPO.git"
+        
+        # 获取所有上游分支
+        echo "获取上游所有分支..."
+        git fetch upstream
+        
+        # 获取所有分支列表
+        BRANCHES=$(git branch -r | grep 'upstream/' | grep -v 'HEAD' | sed 's/upstream\///')
+        
+        if [ -z "$BRANCHES" ]; then
+          echo "⚠️ 未找到任何分支"
           exit 0
         fi
         
-        REPO_COUNT=$(echo "$CONFIG" | jq '. | length')
-        echo "📊 需要同步 $REPO_COUNT 个仓库"
+        echo "找到以下分支:"
+        echo "$BRANCHES"
         
-        RESULTS="[]"
+        # 保存当前分支
+        ORIGINAL_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
         
-        for ((i=0; i<$REPO_COUNT; i++)); do
-          FORK_REPO=$(echo "$CONFIG" | jq -r ".[$i].fork")
-          UPSTREAM_REPO=$(echo "$CONFIG" | jq -r ".[$i].upstream")
-          REPO_NAME=$(echo "$CONFIG" | jq -r ".[$i].name")
+        # 同步每个分支
+        for BRANCH in $BRANCHES; do
+          echo "正在同步分支: $BRANCH"
           
-          echo "🔄 处理: $REPO_NAME (上游: $UPSTREAM_REPO)"
+          # 清理分支名
+          BRANCH=$(echo "$BRANCH" | xargs)
           
-          # 执行同步
-          SYNC_RESULT=$(sync_single_repo "$FORK_REPO" "$UPSTREAM_REPO" "$REPO_NAME")
+          if [ -z "$BRANCH" ]; then
+            continue
+          fi
           
-          # 记录结果
-          RESULT_ENTRY="{\"repo\": \"$REPO_NAME\", \"fork\": \"$FORK_REPO\", \"upstream\": \"$UPSTREAM_REPO\", \"result\": \"$SYNC_RESULT\"}"
-          RESULTS=$(echo "$RESULTS" | jq ". + [$RESULT_ENTRY]")
+          # 检查本地是否存在该分支
+          if git show-ref --quiet "refs/heads/$BRANCH"; then
+            echo "分支 $BRANCH 已存在，切换到并合并..."
+            git checkout "$BRANCH"
+            git merge --no-edit upstream/"$BRANCH" || echo "合并可能失败，继续..."
+          else
+            echo "创建新分支: $BRANCH"
+            git checkout -b "$BRANCH" upstream/"$BRANCH"
+          fi
+          
+          # 推送到 origin
+          echo "推送分支 $BRANCH..."
+          git push origin "$BRANCH"
+          
+          echo "✅ 分支 $BRANCH 同步完成"
         done
         
-        echo "results=$RESULTS" >> $GITHUB_OUTPUT
-        
-    # 同步单个仓库的函数
-    sync_single_repo() {
-      local FORK_REPO=$1
-      local UPSTREAM_REPO=$2
-      local REPO_NAME=$3
-      
-      echo "   🚀 开始同步: $REPO_NAME"
-      
-      # 检查上游是否有更新
-      if [ "$FORCE_SYNC" != "true" ]; then
-        echo "   ⏰ 检查上游更新..."
-        UPDATE_CHECK=$(check_upstream_update "$UPSTREAM_REPO")
-        
-        if [ "$UPDATE_CHECK" == "no_update" ]; then
-          echo "   ⏭️ 上游无更新，跳过"
-          echo "skip"
-          return
-        fi
-      fi
-      
-      # 重试逻辑
-      local RETRY=0
-      while [ $RETRY -le $RETRY_COUNT ]; do
-        if [ $RETRY -gt 0 ]; then
-          echo "   🔄 第 $RETRY 次重试"
-          sleep $((RETRY * 10))
+        # 切换回原始分支
+        if [ -n "$ORIGINAL_BRANCH" ]; then
+          git checkout "$ORIGINAL_BRANCH" 2>/dev/null || true
         fi
         
-        if perform_sync "$FORK_REPO" "$UPSTREAM_REPO"; then
-          echo "   ✅ 同步成功"
-          echo "success"
-          return
-        fi
+        echo "🎉 所有分支同步完成!"
         
-        RETRY=$((RETRY + 1))
-      done
-      
-      echo "   ❌ 同步失败"
-      echo "error"
-    }
-    
-    # 检查上游更新
-    check_upstream_update() {
-      local UPSTREAM_REPO=$1
-      
-      local RESPONSE=$(curl -s -H "Authorization: token $PAT_TOKEN" \
-        -H "Accept: application/vnd.github.v3+json" \
-        "https://api.github.com/repos/$UPSTREAM_REPO" || echo "{}")
-      
-      local LAST_UPDATE=$(echo "$RESPONSE" | jq -r '.updated_at // .pushed_at // ""')
-      
-      if [ -z "$LAST_UPDATE" ] || [ "$LAST_UPDATE" == "null" ]; then
-        echo "needs_update"
-        return
-      fi
-      
-      local LAST_TS=$(date -d "$LAST_UPDATE" +%s 2>/dev/null || echo "0")
-      local NOW_TS=$(date +%s)
-      local DIFF=$((NOW_TS - LAST_TS))
-      
-      if [ $DIFF -lt 86400 ]; then
-        echo "needs_update"
-      else
-        echo "no_update"
-      fi
-    }
-    
-    # 执行同步操作
-    perform_sync() {
-      local FORK_REPO=$1
-      local UPSTREAM_REPO=$2
-      
-      # 仅支持当前仓库同步
-      CURRENT_REPO="${{ github.repository }}"
-      if [ "$FORK_REPO" != "$CURRENT_REPO" ]; then
-        echo "   ⚠️ 仅支持当前仓库同步"
-        return 1
-      fi
-      
-      # 添加上游远程
-      git remote add upstream "https://github.com/$UPSTREAM_REPO.git" 2>/dev/null || \
-        git remote set-url upstream "https://github.com/$UPSTREAM_REPO.git" 2>/dev/null
-      
-      # 获取所有上游分支
-      if ! git fetch upstream --prune; then
-        echo "   ❌ 获取上游分支失败"
-        return 1
-      fi
-      
-      # 获取分支列表
-      local BRANCHES=$(git branch -r | grep 'upstream/' | grep -v 'HEAD' | sed 's/upstream\///' | xargs)
-      
-      if [ -z "$BRANCHES" ]; then
-        echo "   ⚠️ 未找到分支"
-        return 1
-      fi
-      
-      local ORIG_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-      local ERRORS=0
-      local SUCCESS=0
-      
-      # 同步每个分支
-      for BRANCH in $BRANCHES; do
-        echo "   🌿 处理分支: $BRANCH"
-        
-        if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-          git checkout "$BRANCH" || { ERRORS=$((ERRORS + 1)); continue; }
-          
-          if ! git merge --no-edit --strategy-option=theirs "upstream/$BRANCH"; then
-            git reset --hard "upstream/$BRANCH"
-          fi
-        else
-          git checkout -b "$BRANCH" "upstream/$BRANCH" || { ERRORS=$((ERRORS + 1)); continue; }
-        fi
-        
-        if git push origin "$BRANCH" --force-with-lease; then
-          SUCCESS=$((SUCCESS + 1))
-        else
-          ERRORS=$((ERRORS + 1))
-        fi
-      done
-      
-      # 恢复原分支
-      if [ -n "$ORIG_BRANCH" ]; then
-        git checkout "$ORIG_BRANCH" 2>/dev/null || true
-      fi
-      
-      if [ $ERRORS -eq 0 ]; then
-        echo "   ✅ 成功同步 $SUCCESS 个分支"
-        return 0
-      else
-        echo "   ⚠️ $ERRORS 个分支失败，$SUCCESS 个成功"
-        return 1
-      fi
-    }
-        
-    - name: Generate report
+    - name: Create summary
       if: always()
-      env:
-        RESULTS: ${{ steps.sync-repos.outputs.results || '[]' }}
       run: |
-        echo "## 📊 上游同步报告" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**🕐 同步时间:** $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
-        echo "**⚙️ 触发方式:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-        echo "**🔧 输入参数:** \`${{ inputs.upstream_repos }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "## 上游同步报告" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        if [ "$RESULTS" != "[]" ]; then
-          REPO_COUNT=$(echo "$RESULTS" | jq '. | length')
-          SUCCESS=$(echo "$RESULTS" | jq '[.[] | select(.result == "success")] | length')
-          SKIP=$(echo "$RESULTS" | jq '[.[] | select(.result == "skip")] | length')
-          ERROR=$(echo "$RESULTS" | jq '[.[] | select(.result == "error")] | length')
-          
-          echo "### 同步统计" >> $GITHUB_STEP_SUMMARY
-          echo "| 状态 | 数量 |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
-          echo "| ✅ 成功 | $SUCCESS |" >> $GITHUB_STEP_SUMMARY
-          echo "| ⏭️ 跳过 | $SKIP |" >> $GITHUB_STEP_SUMMARY
-          echo "| ❌ 失败 | $ERROR |" >> $GITHUB_STEP_SUMMARY
-          echo "| 📦 总计 | $REPO_COUNT |" >> $GITHUB_STEP_SUMMARY
+        if ${{ steps.get-upstream.outputs.UPSTREAM_REPO != '' && success() }}; then
+          echo "✅ **同步成功**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
-          echo "### 详细结果" >> $GITHUB_STEP_SUMMARY
-          for ((i=0; i<$REPO_COUNT; i++)); do
-            NAME=$(echo "$RESULTS" | jq -r ".[$i].repo")
-            UPSTREAM=$(echo "$RESULTS" | jq -r ".[$i].upstream")
-            RESULT=$(echo "$RESULTS" | jq -r ".[$i].result")
-            
-            case "$RESULT" in
-              "success") EMOJI="✅" ;;
-              "skip") EMOJI="⏭️" ;;
-              "error") EMOJI="❌" ;;
-              *) EMOJI="❓" ;;
-            esac
-            
-            echo "$EMOJI **$NAME**" >> $GITHUB_STEP_SUMMARY
-            echo "   - 上游: \`$UPSTREAM\`" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-          done
+          echo "**上游仓库:** ${{ steps.get-upstream.outputs.UPSTREAM_REPO }}" >> $GITHUB_STEP_SUMMARY
+          echo "**同步时间:** $(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
+          echo "**触发方式:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
         else
-          echo "📭 没有同步任何仓库" >> $GITHUB_STEP_SUMMARY
+          echo "❌ **同步失败或跳过**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**原因:** ${{ steps.get-upstream.outputs.UPSTREAM_REPO == '' && '未找到上游仓库' || '同步过程中出现错误' }}" >> $GITHUB_STEP_SUMMARY
         fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "---" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**🕐 下次自动同步时间:**" >> $GITHUB_STEP_SUMMARY
-        echo "- 北京时间 03:00（UTC 前一天 19:00）" >> $GITHUB_STEP_SUMMARY
-        echo "- 北京时间 15:00（UTC 当天 07:00）" >> $GITHUB_STEP_SUMMARY
