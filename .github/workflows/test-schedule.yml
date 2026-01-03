@@ -1,0 +1,14 @@
+name: Test Schedule
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # 每5分钟一次
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print current time
+        run: |
+          echo "当前时间（UTC）: $(date -u)"
+          echo "当前时间（本地）: $(date)"
