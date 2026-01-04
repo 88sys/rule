@@ -1,179 +1,59 @@
-name: Fix and Sync Meta Rules
+# 文件名: .github/workflows/cleanup-binary-files.yml
+# 运行一次，然后就可以删除这个文件
+
+name: Cleanup Binary Files
 
 on:
   workflow_dispatch:
-    inputs:
-      fix_structure:
-        description: '修复目录结构'
-        required: false
-        default: 'true'
-        type: boolean
 
 permissions:
   contents: write
 
 jobs:
-  fix-and-sync:
+  cleanup:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 2
 
       - name: Setup environment
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # 显示当前目录结构
-          echo "当前目录结构:"
-          find . -maxdepth 3 -type d | sort
 
-      - name: Fix directory structure
-        if: github.event.inputs.fix_structure == 'true'
+      - name: Remove binary .dat files
         run: |
-          echo "=== 修复目录结构 ==="
+          echo "删除不需要的二进制文件..."
           
-          # 1. 删除错误的 rules/meta 目录
-          if [ -d "rules/meta" ]; then
-            echo "删除错误的 rules/meta 目录..."
-            rm -rf rules/meta
+          # 删除所有 .dat 文件
+          if ls meta/*.dat 1> /dev/null 2>&1; then
+            echo "找到以下 .dat 文件:"
+            ls -la meta/*.dat
             
-            # 检查 rules 目录是否为空，如果是则删除
-            if [ -d "rules" ] && [ -z "$(ls -A rules 2>/dev/null)" ]; then
-              echo "rules 目录为空，删除..."
-              rm -rf rules
-            fi
-            
-            echo "✅ 已删除 rules/meta"
+            # 删除它们
+            rm -f meta/*.dat
+            echo "✅ 已删除所有 .dat 文件"
           else
-            echo "rules/meta 目录不存在，无需删除"
+            echo "没有找到 .dat 文件"
           fi
           
-          # 2. 删除根目录下的 meta 目录（如果存在，我们后面会重新创建）
-          if [ -d "meta" ]; then
-            echo "删除旧的 meta 目录..."
-            rm -rf meta
-            echo "✅ 已删除旧的 meta 目录"
-          fi
-          
-          # 3. 显示修复后的结构
-          echo "修复后的目录结构:"
-          find . -maxdepth 2 -type d | sort
-
-      - name: Get source repository
-        id: get_source
-        run: |
-          SOURCE_DIR="/tmp/meta-source-$(date +%s)"
-          echo "source_dir=$SOURCE_DIR" >> $GITHUB_OUTPUT
-          
-          echo "克隆源仓库的 meta 分支..."
-          if ! git clone --depth=1 --branch=meta https://github.com/MetaCubeX/meta-rules-dat.git "$SOURCE_DIR"; then
-            echo "❌ 克隆失败"
-            exit 1
-          fi
-          
-          echo "源仓库结构:"
-          ls -la "$SOURCE_DIR/"
-          
-          echo "✅ 源仓库获取成功"
-
-      - name: Create correct meta directory
-        run: |
-          echo "创建正确的 meta 目录结构..."
-          
-          # 创建根目录下的 meta 目录
-          mkdir -p meta
-          
-          # 同步源仓库的文件夹结构
-          SOURCE_DIR="${{ steps.get_source.outputs.source_dir }}"
-          
-          echo "同步文件夹结构..."
-          rsync -av \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='README.md' \
-            --exclude='LICENSE' \
-            --exclude='*.yml' \
-            --exclude='*.yaml' \
-            --exclude='Makefile' \
-            "$SOURCE_DIR/" "meta/"
-          
-          echo "✅ 文件夹同步完成"
-          echo "同步后 meta 目录结构:"
+          # 显示剩余的文件结构
+          echo "清理后的 meta 目录结构:"
           ls -la meta/
 
-      - name: Download binary files
+      - name: Commit and push if changes
         run: |
-          echo "下载二进制文件..."
-          
-          # 定义需要下载的二进制文件列表
-          declare -A BINARY_FILES=(
-            ["geoip.dat"]="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"
-            ["geoip-lite.dat"]="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip-lite.dat"
-            ["geosite.dat"]="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
-            ["geosite-lite.dat"]="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite-lite.dat"
-          )
-          
-          for filename in "${!BINARY_FILES[@]}"; do
-            url="${BINARY_FILES[$filename]}"
-            echo "下载: $filename"
-            
-            if curl -L -o "meta/$filename" "$url" --fail --silent; then
-              FILE_SIZE=$(stat -c%s "meta/$filename" 2>/dev/null || echo "0")
-              echo "  ✅ 成功 ($((FILE_SIZE/1024)) KB)"
-            else
-              echo "  ⚠️ 下载失败，跳过"
-              rm -f "meta/$filename" 2>/dev/null || true
-            fi
-          done
-
-      - name: Commit and push changes
-        run: |
-          echo "提交更改..."
-          
-          # 添加所有更改
-          git add -A
-          
           # 检查是否有更改
+          git add meta
+          
           if git diff --cached --quiet; then
             echo "没有更改需要提交"
           else
-            # 创建提交
-            TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-            
-            COMMIT_MSG="🔧 修复目录结构并同步 MetaCubeX 规则
-            
-            修复内容:
-            - 删除错误的 rules/meta 目录
-            - 创建正确的 meta/ 目录（根目录下）
-            - 同步源仓库的文件夹结构
-            - 下载最新的二进制文件
-            
-            详细信息:
-            - 源仓库: MetaCubeX/meta-rules-dat@meta
-            - 修复时间: $TIMESTAMP
-            - 目录结构: meta/ (根目录)
-            
-            由 GitHub Actions 自动修复和同步"
-            
-            git commit -m "$COMMIT_MSG"
-            
-            # 推送到远程
+            echo "提交更改..."
+            git commit -m "🧹 清理：删除不需要的二进制文件 (.dat)"
             git push origin main
-            
-            echo "✅ 已提交并推送修复"
+            echo "✅ 已清理并提交"
           fi
-
-      - name: Show final structure
-        run: |
-          echo "=== 最终目录结构 ==="
-          echo "根目录内容:"
-          ls -la
-          echo ""
-          echo "meta 目录内容:"
-          ls -la meta/
