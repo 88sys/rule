@@ -20,6 +20,11 @@ payload:
     - +.utoken.umeng.com
     - +.w.cnzz.com
     - +.z.gds.cnzz.com
+    - +.adashx.ut.amap.com
+    - +.dualstack-logs.amap.com
+    - +.logs.amap.com
+    - +.optimus-ads.amap.com
+    - +.v6-adashx.ut.amap.com
     - +.a.alimama.cn
     - +.acjs.aliyun.com
     - +.adash-c.m.taobao.com
@@ -86,8 +91,3 @@ payload:
     - +.v6-adashx.ut.youku.com
     - +.yk-ssp.ad.youku.com
     - +.ykad-data.youku.com
-    - +.adashx.ut.amap.com
-    - +.dualstack-logs.amap.com
-    - +.logs.amap.com
-    - +.optimus-ads.amap.com
-    - +.v6-adashx.ut.amap.com

@@ -17,7 +17,7 @@ payload:
     - +.kindle
     - +.imdb
     - +.amazon
-    - +.amazonaws.info
+    - +.amazonaws.biz
     - +.amazonpay.com
     - +.aboutamazon.fr
     - +.aboutamazon.in
@@ -33,13 +33,13 @@ payload:
     - +.amazon.ca
     - +.amazon.com
     - +.amazon.de
-    - +.ss2.us
-    - +.awstrust.com
-    - +.amazontrust.com
     - +.wholeplanetfoundation.org
     - +.wholekidsfoundation.org
     - +.wholefoodsmarket.com
     - +.wholefoods.com
+    - +.wholecitiesfoundation.org
+    - +.wfm.com
+    - +.primevideo.tv
     - +.amazon.dev
     - +.amazon.es
     - +.amazon.fr
@@ -61,7 +61,7 @@ payload:
     - +.amazonlaunchpad.com
     - +.amazonliterarypartnership.com
     - +.amazonlumberyard.wang
-    - +.amazonses.com
+    - +.amazonaws.org
     - +.amazonpay.in
     - +.amazonsdi.com
     - +.amazonstudiosguilds.com
@@ -71,7 +71,7 @@ payload:
     - +.amzn.to
     - +.amznl.com
     - +.associates-amazon.com
-    - +.amazoncognito.com
+    - +.amazonaws.net
     - +.gdansk-amazon.com
     - +.images-amazon.com
     - +.media-amazon.com
@@ -83,21 +83,24 @@ payload:
     - +.alexa.com
     - +.audible.com
     - +.createspace.com
+    - +.amazontrust.com
+    - +.awstrust.com
+    - +.ss2.us
     - +.aboutamazon.es
     - +.awsautopilot.com
     - +.amzndns.net
     - +.aesworkshops.com
     - +.amazonaws-china.com
-    - +.amazonaws.biz
+    - +.aboutamazon.de
     - +.amzndns.org
     - +.amazonaws.com
-    - +.aboutamazon.de
-    - +.amazonaws.net
-    - +.amazonaws.org
-    - +.amazonaws.tv
+    - +.amazonaws.info
     - +.gameon-masters.com
     - +.aboutamazon.eu
-    - +.aws-iot-hackathon.com
+    - +.acmvalidations.com
+    - +.amazoncognito.com
+    - +.amazonses.com
+    - +.amazonworkdocs.com
     - +.amplifyapp.com
     - +.amplifyframework.com
     - +.awsautoscaling.com
@@ -105,10 +108,10 @@ payload:
     - +.aws.dev
     - +.awsapprunner.com
     - +.awsapps.com
-    - +.acmvalidations.com
+    - +.amazonaws.tv
     - +.awscommandlineinterface.com
     - +.acmvalidationsaws.com
-    - +.amazonworkdocs.com
+    - +.aws-iot-hackathon.com
     - +.awsedstart.com
     - +.awseducate.com
     - +.awseducate.net
@@ -128,9 +131,9 @@ payload:
     - +.thinkboxsoftware.com
     - +.awsbraket.com
     - +.amzndns.com
-    - +.wholecitiesfoundation.org
-    - +.wfm.com
-    - +.primevideo.tv
+    - +.primevideo.org
+    - +.primevideo.info
+    - +.primevideo.com
     - +.aboutamazon.com
     - +.boxofficemojo.com
     - +.imdb.com
@@ -151,28 +154,25 @@ payload:
     - +.kindleoasis.jp
     - +.kindleoasis.org
     - +.kindleoasis.us
-    - +.primevideo.org
-    - +.primevideo.info
+    - +.primevideo.cc
+    - +.prime-video.com
     - +.aiv-cdn.net
     - +.amazonprimevideos.com
     - +.amazonvideo.cc
     - +.amazonvideo.com
-    - +.prime-video.com
-    - +.primevideo.cc
-    - +.primevideo.com
-    - +.amazon.co.uk
     - +.amazon.com.br
+    - +.amazon.com.au
     - +.amazonaws.co.uk
-    - +.aboutamazon.co.uk
     - +.amzndns.co.uk
+    - +.amazon.com.tr
     - +.kindle.co.uk
     - +.kindle.co.jp
-    - +.amazon.com.tr
     - +.wholefoodsmarket.co.uk
-    - +.amazon.com.mx
-    - +.amazon.com.au
     - +.amazon.co.jp
+    - +.amazon.co.uk
+    - +.amazon.com.mx
     - +.aboutamazon.com.au
+    - +.aboutamazon.co.uk
     - +.aboutamazon.cn
     - +.alexafund.cn
     - +.alexafund.com.cn
@@ -197,6 +197,8 @@ payload:
     - +.z.cn
     - images-cn.ssl-images-amazon.com
     - images-cn-8.ssl-images-amazon.com
+    - +.amazon-adsystem.com
+    - +.serving-sys.com
     - +.a2z.org.cn
     - +.amazonaws.cn
     - +.amazonaws.com.cn
@@ -227,5 +229,3 @@ payload:
     - +.kindleoasis.com.cn
     - +.amazonprimevideo.cn
     - +.amazonprimevideo.com.cn
-    - +.amazon-adsystem.com
-    - +.serving-sys.com

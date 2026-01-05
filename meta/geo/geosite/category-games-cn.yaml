@@ -1,6 +1,6 @@
 payload:
-    - +.texasholdemcup.net
-    - +.tcfmglobal.com
+    - +.gamebonfire.com
+    - +.xindong.com
     - +.astral-vector.com
     - +.forevernine.com
     - +.fxt365.com
@@ -18,33 +18,15 @@ payload:
     - +.winegame.net
     - +.wo1wan.com
     - +.ycgame.com
-    - +.cowlevel.net
-    - +.cdncl.net
-    - +.ro.com
-    - +.xd.cn
-    - +.xd.com
-    - +.xdcdn.net
-    - +.xindong.com
-    - +.tapimg.com
-    - +.tapimg.net
-    - +.taptap.cn
-    - +.taptap.com
-    - +.taptapdada.com
-    - +.dobest.com
-    - +.langrenclub.com
-    - +.sanguosha.com
-    - +.xhlsgs.com
-    - +.xinwuji.com
-    - +.yokaverse.com
-    - +.zhuoyou.com
-    - +.7k7k.com
-    - +.9game.cn
     - +.bilibiligame.cn
     - +.bilibiligame.co
     - +.bilibiligame.net
-    - +.bcfmglobal.com
+    - +.biligame.co
     - +.biligame.com
     - +.biligame.net
+    - +.sl916.com
+    - +.cowlevel.net
+    - +.cdncl.net
     - +.hero.com
     - +.herogame.com
     - +.heroesports.com
@@ -55,12 +37,12 @@ payload:
     - +.mihayo.com
     - +.mihayou.com
     - +.mihoyo.com
-    - +.mihoyocg.com
+    - +.7k7k.com
     - +.mihoyogift.com
     - +.mihoyomall.com
     - +.miyoushe.com
     - +.benghuai.com
-    - +.bh3.com
+    - +.gotolink.net
     - +.bhsr.com
     - +.themisweeps.com
     - +.yuanshen.com
@@ -105,9 +87,9 @@ payload:
     - +.tencentstart.com
     - +.texasholdemcup.cn
     - +.texasholdemcup.com
-    - +.sl916.com
-    - +.9xgame.com
-    - +.biligame.co
+    - +.texasholdemcup.net
+    - +.timibase.com
+    - +.bcfmglobal.com
     - +.gameitop.com
     - +.goto-game.mobi
     - +.yximg.cn
@@ -123,15 +105,15 @@ payload:
     - +.mszdld.cn
     - +.mszdld.com
     - +.mszdld.net
-    - +.gamebonfire.com
-    - +.ffbuddy.com
-    - +.gotolink.net
+    - +.mihoyocg.com
+    - +.9xgame.com
+    - +.bh3.com
     - +.17roco.com
     - +.gtgres.com
     - +.realcybertron.com
     - +.wegame.com
     - +.anticheatexpert.com
-    - +.timibase.com
+    - +.tcfmglobal.com
     - +.battlecare.net
     - +.wegameplus.com
     - +.codm.com
@@ -145,13 +127,17 @@ payload:
     - +.scsentry.cn
     - +.supercellcommunity.cn
     - +.supercellsupport.cn
-    - +.tiancity.com
-    - +.tiancitycdn.com
-    - +.vrzwk.cn
-    - +.vrzwk.com
-    - +.vrzwk.net
-    - +.yxhhdl.com
-    - +.vrzwk.top
+    - +.ro.com
+    - +.xd.cn
+    - +.xd.com
+    - +.xdcdn.net
+    - +.ffbuddy.com
+    - +.9game.cn
+    - +.tapimg.com
+    - +.tapimg.net
+    - +.taptap.cn
+    - +.taptap.com
+    - +.taptapdada.com
     - +.3304399.com
     - +.3304399.net
     - +.3839.com
@@ -206,12 +192,26 @@ payload:
     - +.we4399.com
     - +.webgame163.com
     - +.youba.com
+    - +.yxhhdl.com
+    - +.tiancity.com
+    - +.tiancitycdn.com
+    - +.vrzwk.cn
+    - +.vrzwk.com
+    - +.vrzwk.net
+    - +.vrzwk.top
+    - +.dobest.com
+    - +.langrenclub.com
+    - +.sanguosha.com
+    - +.xhlsgs.com
+    - +.xinwuji.com
+    - +.yokaverse.com
+    - +.zhuoyou.com
     - +.werepository.com.cn
     - +.wegame.com.cn
     - +.gouhuo.qq.com
     - +.roblox.qq.com
     - +.goto-game.net.cn
     - +.roco.qq.com
+    - +.taptap.io
     - +.kurogames.com
     - +.aki-game.com
-    - +.taptap.io

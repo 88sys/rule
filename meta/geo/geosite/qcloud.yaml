@@ -60,7 +60,7 @@ payload:
     - +.itopsdk.com
     - +.my-qcloud.com
     - +.myelasticsearch.com
-    - +.discuz.org
+    - +.doh.pub
     - +.myqcloud.com
     - +.onexmail.com
     - +.openapp.run
@@ -76,9 +76,9 @@ payload:
     - +.qcloudclass.com
     - +.qcloudcos.cn
     - +.qcloudcos.com
-    - +.discuz.net
-    - +.comsenz.com
-    - +.doh.pub
+    - +.dnsv5.com
+    - +.dnspod.org
+    - +.dnsv3.com
     - +.qclouder.com
     - +.qcloudgme.com
     - +.qcloudimg.com
@@ -141,7 +141,7 @@ payload:
     - +.tencentbyod.com
     - +.tencentcdb.cn
     - +.tencentcdb.com
-    - +.dnsv5.com
+    - +.dnsv4.com
     - +.tencentclb.com
     - +.hr-welink.com
     - +.acctdns.net
@@ -153,7 +153,7 @@ payload:
     - +.tencentcloudses.com
     - +.tencentcos.cn
     - +.tencentcos.com
-    - +.dnspod.org
+    - +.dns.pub
     - +.tencentcs.cn
     - +.tencentcs.com
     - +.tencentdayu.com
@@ -173,12 +173,12 @@ payload:
     - +.tencentyun.com
     - +.tendbcluster.com
     - +.tendis.net
-    - +.dnsv3.com
+    - +.dnsapi.cn
     - +.testmeet.cn
     - +.testwaf.com
     - +.tgovcloud.com
     - +.tidaas.com
-    - +.dnsv4.com
+    - +.dnspod.mobi
     - +.timmerse.com
     - +.tlivecdn.com
     - +.tlivemcdn.com
@@ -203,7 +203,7 @@ payload:
     - +.wework-studio.com
     - +.xqymuy.com
     - +.yufuid.com
-    - +.dns.pub
+    - +.dot.pub
     - +.yufuid.net
     - +.yunjitele.com
     - +.dnse0.cn
@@ -248,13 +248,13 @@ payload:
     - +.tdnsv13.net
     - +.tdnsv14.net
     - +.tdnsv15.net
-    - +.dnsapi.cn
-    - +.dnspod.mobi
-    - +.dot.pub
     - +.dnspod.com
     - +.dnspod.cn
     - +.dnsv2.com
     - +.dnspod.net
+    - +.discuz.org
+    - +.discuz.net
+    - +.comsenz.com
     - +.rumt-zh.com
     - +.tamaegis.com
     - +.ym.run
@@ -268,13 +268,13 @@ payload:
     - +.m9.run
     - +.testjrzk.net.cn
     - +.tencentcos.com.cn
-    - +.jrzk.net.cn
+    - +.ectencent.com.cn
     - +.aegis.qq.com
     - +.yufuid.com.cn
-    - +.ectencent.com.cn
-    - +.dnspod.com.cn
-    - +.qcloudcos.com.cn
     - +.dnsv1.com.cn
+    - +.jrzk.net.cn
+    - +.qcloudcos.com.cn
+    - +.dnspod.com.cn
     - +.timatrix.com.cn
     - +.oracle-tencent.net.cn
     - +.oracle-tencent.com.cn
