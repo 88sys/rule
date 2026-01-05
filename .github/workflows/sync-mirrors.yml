@@ -26,24 +26,24 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           
-          # 写入两个独立的私钥
-          echo "${{ secrets.SSH_PRIVATE_KEY_T }}" > ~/.ssh/id_ed25519_t
-          echo "${{ secrets.SSH_PRIVATE_KEY_X1 }}" > ~/.ssh/id_ed25519_x1
-          chmod 600 ~/.ssh/id_ed25519_t ~/.ssh/id_ed25519_x1
+          # 写入两个独立的私钥（使用全名规则）
+          echo "${{ secrets.SSH_PRIVATE_KEY_TIMEFLYSOON }}" > ~/.ssh/id_ed25519_timeflysoon
+          echo "${{ secrets.SSH_PRIVATE_KEY_88ALT }}" > ~/.ssh/id_ed25519_88alt
+          chmod 600 ~/.ssh/id_ed25519_timeflysoon ~/.ssh/id_ed25519_88alt
           
-          # 配置SSH主机别名
+          # 配置SSH主机别名（使用全名规则）
           cat > ~/.ssh/config << 'EOF'
-          Host github-t
+          Host github-timeflysoon
             HostName github.com
             User git
-            IdentityFile ~/.ssh/id_ed25519_t
+            IdentityFile ~/.ssh/id_ed25519_timeflysoon
             IdentitiesOnly yes
             StrictHostKeyChecking no
           
-          Host github-x1
+          Host github-88alt
             HostName github.com
             User git
-            IdentityFile ~/.ssh/id_ed25519_x1
+            IdentityFile ~/.ssh/id_ed25519_88alt
             IdentitiesOnly yes
             StrictHostKeyChecking no
           EOF
@@ -51,6 +51,9 @@ jobs:
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
           
           echo "✅ SSH配置完成"
+          echo "已使用全名规则："
+          echo "  - github-timeflysoon -> id_ed25519_timeflysoon"
+          echo "  - github-88alt -> id_ed25519_88alt"
 
       - name: 3. 验证SSH连接
         run: |
@@ -58,19 +61,19 @@ jobs:
           
           # 测试第一个密钥
           echo "测试 timeflysoon 仓库连接..."
-          if ssh -T git@github-t 2>&1 | grep -q "timeflysoon"; then
-            echo "✅ 密钥T连接成功"
+          if ssh -T git@github-timeflysoon 2>&1 | grep -q "timeflysoon"; then
+            echo "✅ 密钥 timeflysoon 连接成功"
           else
-            echo "❌ 密钥T连接失败"
+            echo "❌ 密钥 timeflysoon 连接失败"
             exit 1
           fi
           
           # 测试第二个密钥
           echo "测试 88alt 仓库连接..."
-          if ssh -T git@github-x1 2>&1 | grep -q "88alt"; then
-            echo "✅ 密钥X1连接成功"
+          if ssh -T git@github-88alt 2>&1 | grep -q "88alt"; then
+            echo "✅ 密钥 88alt 连接成功"
           else
-            echo "❌ 密钥X1连接失败"
+            echo "❌ 密钥 88alt 连接失败"
             exit 1
           fi
           
@@ -154,9 +157,10 @@ jobs:
           
           echo "=== 开始同步镜像仓库 $(date '+%Y-%m-%d %H:%M:%S') UTC ==="
           
+          # 使用全名规则的SSH主机别名
           TARGET_REPOS=(
-            "git@github-t:timeflysoon/meta-rules-dat.git"
-            "git@github-x1:88alt/meta-rules-dat.git"
+            "git@github-timeflysoon:timeflysoon/meta-rules-dat.git"
+            "git@github-88alt:88alt/meta-rules-dat.git"
           )
           
           SYNC_START_TIME=$(date +%s)
@@ -201,8 +205,8 @@ jobs:
         if: always()
         run: |
           echo "清理SSH密钥文件..."
-          rm -f ~/.ssh/id_ed25519_t
-          rm -f ~/.ssh/id_ed25519_x1
+          rm -f ~/.ssh/id_ed25519_timeflysoon
+          rm -f ~/.ssh/id_ed25519_88alt
           rm -f ~/.ssh/config
           rm -f ~/.ssh/known_hosts
           echo "✅ 敏感数据清理完成"
@@ -221,8 +225,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           
           echo "**同步目标**:" >> $GITHUB_STEP_SUMMARY
-          echo "1. timeflysoon/meta-rules-dat（使用密钥T）" >> $GITHUB_STEP_SUMMARY
-          echo "2. 88alt/meta-rules-dat（使用密钥X1）" >> $GITHUB_STEP_SUMMARY
+          echo "1. timeflysoon/meta-rules-dat（使用全名密钥）" >> $GITHUB_STEP_SUMMARY
+          echo "2. 88alt/meta-rules-dat（使用全名密钥）" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [[ "${{ job.status }}" == "success" ]]; then
