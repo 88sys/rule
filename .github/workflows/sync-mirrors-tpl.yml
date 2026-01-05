@@ -38,72 +38,96 @@ jobs:
           echo "  目标仓库1: ${{ github.event.inputs.target_repo_1 }}"
           echo "  目标仓库2: ${{ github.event.inputs.target_repo_2 }}"
 
-      - name: 2. 设置SSH密钥对（动态适配）
+      - name: 2. 设置SSH密钥对（基于映射表）
+        id: ssh-setup
         run: |
-          echo "配置SSH环境（动态适配目标仓库）..."
+          echo "正在根据预定义映射表配置SSH..."
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           
-          # 动态生成目标仓库列表和映射关系
-          TARGET_1_OWNER=$(echo "${{ github.event.inputs.target_repo_1 }}" | cut -d'/' -f1)
-          TARGET_2_OWNER=$(echo "${{ github.event.inputs.target_repo_2 }}" | cut -d'/' -f1)
+          # 定义内部映射表 (Owner -> [Host别名, 私钥文件名, GitHub Secret名])
+          declare -A SSH_MAP
+          SSH_MAP[timeflysoon]="github-t id_ed25519_t SSH_PRIVATE_KEY_T"
+          SSH_MAP[88alt]="github-x1 id_ed25519_x1 SSH_PRIVATE_KEY_X1"
+          SSH_MAP[88top]="github-u6 id_ed25519_u6 SSH_PRIVATE_KEY_U6"
+          SSH_MAP[88sys]="github-x6 id_ed25519_x6 SSH_PRIVATE_KEY_X6"
           
-          # 写入对应的私钥（Secrets名称需与仓库所有者对应，如 SSH_PRIVATE_KEY_OWNER）
-          echo "${{ secrets.SSH_PRIVATE_KEY_T }}" > ~/.ssh/id_$TARGET_1_OWNER
-          echo "${{ secrets.SSH_PRIVATE_KEY_X1 }}" > ~/.ssh/id_$TARGET_2_OWNER
-          chmod 600 ~/.ssh/id_$TARGET_1_OWNER ~/.ssh/id_$TARGET_2_OWNER
+          # 提取输入的目标仓库所有者
+          OWNER_1=$(echo "${{ github.event.inputs.target_repo_1 }}" | cut -d'/' -f1)
+          OWNER_2=$(echo "${{ github.event.inputs.target_repo_2 }}" | cut -d'/' -f1)
           
-          # 动态生成SSH配置
+          # 查找并应用配置
+          get_ssh_config() {
+            local owner=$1
+            local config="${SSH_MAP[$owner]}"
+            if [ -z "$config" ]; then
+              echo "❌ 错误：未预配置的仓库所有者 '$owner'。"
+              echo "   允许的配置有：timeflysoon, 88alt, 88top, 88sys"
+              exit 1
+            fi
+            echo "$config"
+          }
+          
+          echo "正在为输入的目标仓库加载映射..."
+          CONFIG_1=$(get_ssh_config "$OWNER_1")
+          CONFIG_2=$(get_ssh_config "$OWNER_2")
+          
+          read HOST_1 KEY_1 SECRET_1 <<< "$CONFIG_1"
+          read HOST_2 KEY_2 SECRET_2 <<< "$CONFIG_2"
+          
+          # 动态写入私钥文件
+          echo "${{ secrets[SECRET_1] }}" > ~/.ssh/$KEY_1
+          echo "${{ secrets[SECRET_2] }}" > ~/.ssh/$KEY_2
+          chmod 600 ~/.ssh/$KEY_1 ~/.ssh/$KEY_2
+          
+          # 动态生成 SSH Config
           cat > ~/.ssh/config << EOF
-          # 目标仓库1配置
-          Host github-$TARGET_1_OWNER
+          # 目标仓库1 ($OWNER_1) | Deploy Key标题: github-actions-sync-${KEY_1##*-}
+          Host $HOST_1
             HostName github.com
             User git
-            IdentityFile ~/.ssh/id_$TARGET_1_OWNER
+            IdentityFile ~/.ssh/$KEY_1
             IdentitiesOnly yes
             StrictHostKeyChecking no
           
-          # 目标仓库2配置
-          Host github-$TARGET_2_OWNER
+          # 目标仓库2 ($OWNER_2) | Deploy Key标题: github-actions-sync-${KEY_2##*-}
+          Host $HOST_2
             HostName github.com
             User git
-            IdentityFile ~/.ssh/id_$TARGET_2_OWNER
+            IdentityFile ~/.ssh/$KEY_2
             IdentitiesOnly yes
             StrictHostKeyChecking no
           EOF
           
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
           
+          # 将关键的映射结果输出，供后续步骤使用
+          echo "host_1=$HOST_1" >> $GITHUB_OUTPUT
+          echo "host_2=$HOST_2" >> $GITHUB_OUTPUT
+          
           echo "✅ SSH配置完成"
-          echo "已为以下仓库创建配置："
-          echo "  - ${{ github.event.inputs.target_repo_1 }} (密钥: ~/.ssh/id_$TARGET_1_OWNER)"
-          echo "  - ${{ github.event.inputs.target_repo_2 }} (密钥: ~/.ssh/id_$TARGET_2_OWNER)"
+          echo "映射详情："
+          echo "  $OWNER_1 -> Host: $HOST_1, Key: $KEY_1, Secret: $SECRET_1"
+          echo "  $OWNER_2 -> Host: $HOST_2, Key: $KEY_2, Secret: $SECRET_2"
 
       - name: 3. 验证SSH连接
+        needs: [ssh-setup]
         run: |
-          echo "验证SSH密钥连接..."
+          echo "验证SSH连接..."
+          echo "使用映射的Host别名进行连接测试..."
           
-          TARGET_1_OWNER=$(echo "${{ github.event.inputs.target_repo_1 }}" | cut -d'/' -f1)
-          TARGET_2_OWNER=$(echo "${{ github.event.inputs.target_repo_2 }}" | cut -d'/' -f1)
+          HOST_1="${{ steps.ssh-setup.outputs.host_1 }}"
+          HOST_2="${{ steps.ssh-setup.outputs.host_2 }}"
           
-          # 测试第一个密钥
-          echo "测试 $TARGET_1_OWNER 仓库连接..."
-          if ssh -T git@github-$TARGET_1_OWNER 2>&1 | grep -q "$TARGET_1_OWNER"; then
-            echo "✅ 密钥 $TARGET_1_OWNER 连接成功"
-          else
-            echo "❌ 密钥 $TARGET_1_OWNER 连接失败"
-            exit 1
-          fi
-          
-          # 测试第二个密钥
-          echo "测试 $TARGET_2_OWNER 仓库连接..."
-          if ssh -T git@github-$TARGET_2_OWNER 2>&1 | grep -q "$TARGET_2_OWNER"; then
-            echo "✅ 密钥 $TARGET_2_OWNER 连接成功"
-          else
-            echo "❌ 密钥 $TARGET_2_OWNER 连接失败"
-            exit 1
-          fi
-          
+          for HOST in $HOST_1 $HOST_2; do
+            echo "测试连接 $HOST ..."
+            if ssh -T git@$HOST 2>&1 | grep -q "successfully authenticated"; then
+              echo "  ✅ 连接成功"
+            else
+              echo "  ❌ 连接失败"
+              exit 1
+            fi
+          done
           echo "所有SSH连接验证通过"
 
       - name: 4. 配置Git
@@ -171,57 +195,46 @@ jobs:
           cd ..
 
       - name: 6. 执行镜像同步
+        needs: [ssh-setup]
         run: |
           set -e
-          
           cd source-repo.git
-          
           echo "=== 开始同步镜像仓库 $(date '+%Y-%m-%d %H:%M:%S') UTC ==="
           
-          TARGET_1_OWNER=$(echo "${{ github.event.inputs.target_repo_1 }}" | cut -d'/' -f1)
-          TARGET_2_OWNER=$(echo "${{ github.event.inputs.target_repo_2 }}" | cut -d'/' -f1)
+          # 使用步骤2输出的Host别名
+          HOST_1="${{ steps.ssh-setup.outputs.host_1 }}"
+          HOST_2="${{ steps.ssh-setup.outputs.host_2 }}"
           
           TARGET_REPOS=(
-            "git@github-$TARGET_1_OWNER:${{ github.event.inputs.target_repo_1 }}.git"
-            "git@github-$TARGET_2_OWNER:${{ github.event.inputs.target_repo_2 }}.git"
+            "git@$HOST_1:${{ github.event.inputs.target_repo_1 }}.git"
+            "git@$HOST_2:${{ github.event.inputs.target_repo_2 }}.git"
           )
           
-          SYNC_START_TIME=$(date +%s)
-          
+          SYNC_START=$(date +%s)
           for TARGET_REPO in "${TARGET_REPOS[@]}"; do
-            REPO_HOST=$(echo "$TARGET_REPO" | cut -d'@' -f2 | cut -d':' -f1)
             REPO_PATH=$(echo "$TARGET_REPO" | cut -d':' -f2)
-            
-            echo "=== 推送镜像到: $REPO_PATH ==="
-            
-            REPO_START_TIME=$(date +%s)
+            echo ">> 推送镜像到: $REPO_PATH"
+            REPO_START=$(date +%s)
             
             MAX_RETRY=2
             for i in $(seq 1 $MAX_RETRY); do
-              echo "推送尝试 $i/$MAX_RETRY..."
+              echo "  尝试 $i/$MAX_RETRY..."
               if git push --mirror "$TARGET_REPO"; then
-                REPO_END_TIME=$(date +%s)
-                REPO_DURATION=$((REPO_END_TIME - REPO_START_TIME))
-                
+                REPO_DURATION=$(( $(date +%s) - $REPO_START ))
                 BRANCHES_COUNT=$(git branch -r | wc -l)
                 TAGS_COUNT=$(git tag | wc -l)
-                
-                echo "✅ 推送成功"
-                echo "  分支: $BRANCHES_COUNT, 标签: $TAGS_COUNT, 耗时: ${REPO_DURATION}秒"
+                echo "  ✅ 推送成功 (分支: $BRANCHES_COUNT, 标签: $TAGS_COUNT, 耗时: ${REPO_DURATION}秒)"
                 break
               elif [ $i -eq $MAX_RETRY ]; then
-                echo "❌ 推送失败（已达最大重试次数）"
+                echo "  ❌ 推送失败（已达最大重试次数）"
                 break
               else
-                echo "推送失败，10秒后重试 ($i/$MAX_RETRY)..."
                 sleep 10
               fi
             done
           done
           
-          SYNC_END_TIME=$(date +%s)
-          TOTAL_DURATION=$((SYNC_END_TIME - SYNC_START_TIME))
-          
+          TOTAL_DURATION=$(( $(date +%s) - $SYNC_START ))
           echo "=== 同步完成，总耗时: ${TOTAL_DURATION}秒 ==="
 
       - name: 7. 清理敏感数据
@@ -230,9 +243,19 @@ jobs:
           echo "清理SSH密钥文件..."
           TARGET_1_OWNER=$(echo "${{ github.event.inputs.target_repo_1 }}" | cut -d'/' -f1)
           TARGET_2_OWNER=$(echo "${{ github.event.inputs.target_repo_2 }}" | cut -d'/' -f1)
-          rm -f ~/.ssh/id_$TARGET_1_OWNER ~/.ssh/id_$TARGET_2_OWNER
-          rm -f ~/.ssh/config
-          rm -f ~/.ssh/known_hosts
+          
+          # 根据映射表清理对应的私钥文件
+          declare -A SSH_MAP
+          SSH_MAP[timeflysoon]="id_ed25519_t"
+          SSH_MAP[88alt]="id_ed25519_x1"
+          SSH_MAP[88top]="id_ed25519_u6"
+          SSH_MAP[88sys]="id_ed25519_x6"
+          
+          KEY_1="${SSH_MAP[$TARGET_1_OWNER]}"
+          KEY_2="${SSH_MAP[$TARGET_2_OWNER]}"
+          
+          rm -f ~/.ssh/$KEY_1 ~/.ssh/$KEY_2 2>/dev/null || true
+          rm -f ~/.ssh/config ~/.ssh/known_hosts 2>/dev/null || true
           echo "✅ 敏感数据清理完成"
 
       - name: 8. 生成运行报告
