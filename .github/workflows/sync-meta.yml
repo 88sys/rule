@@ -1,4 +1,4 @@
-# 文件名: .github/workflows/sync-meta.yml
+# 文件名: .github/workflows/sync-meta-folders.yml
 # 日常使用的同步工作流 - 与源仓库完全一致
 
 name: Sync Meta Folders Only
@@ -29,82 +29,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Step 1: Delete meta directory and commit
-        id: delete_step
+      - name: Step 1: Delete meta directory
         run: |
           echo "=== 第一步：删除 meta 目录 ==="
           
           # 检查并记录删除前的状态
           if [ -d "meta" ]; then
             echo "找到 meta 目录，正在删除..."
-            FILES_BEFORE=$(find meta -type f | wc -l)
-            FOLDERS_BEFORE=$(find meta -type d | wc -l)
-            echo "删除前：$FILES_BEFORE 个文件，$FOLDERS_BEFORE 个目录"
-            
             rm -rf meta
             echo "✅ meta 目录已删除"
-            
-            # 提交删除操作
-            git add -A
-            if git diff --cached --quiet; then
-              echo "⚠️  没有检测到删除变化，创建空提交..."
-              TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-              COMMIT_MSG="🗑️ 删除 meta 目录（第一步）
-
-              为重新同步准备，删除现有 meta 目录。
-
-              详细信息:
-              - 操作时间: $TIMESTAMP
-              - 删除文件数: $FILES_BEFORE
-              - 删除目录数: $FOLDERS_BEFORE
-
-              由 GitHub Actions 自动执行"
-              git commit --allow-empty -m "$COMMIT_MSG"
-            else
-              echo "检测到删除变化，提交删除操作..."
-              TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-              COMMIT_MSG="🗑️ 删除 meta 目录（第一步）
-
-              为重新同步准备，删除现有 meta 目录。
-
-              详细信息:
-              - 操作时间: $TIMESTAMP
-              - 删除文件数: $FILES_BEFORE
-              - 删除目录数: $FOLDERS_BEFORE
-
-              由 GitHub Actions 自动执行"
-              git commit -m "$COMMIT_MSG"
-            fi
-            
-            # 推送删除提交
-            git push origin main
-            echo "✅ 已提交并推送删除操作"
-            echo "deleted=true" >> $GITHUB_OUTPUT
           else
             echo "ℹ️  meta 目录不存在，无需删除"
-            echo "⚠️  创建空提交记录开始同步..."
-            TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-            COMMIT_MSG="🚀 开始同步 meta 目录（第一步）
-
-            meta 目录不存在，开始全新同步。
-
-            详细信息:
-            - 操作时间: $TIMESTAMP
-            - 状态: meta 目录不存在，将进行全新克隆
-
-            由 GitHub Actions 自动执行"
-            git commit --allow-empty -m "$COMMIT_MSG"
-            git push origin main
-            echo "✅ 已创建开始同步记录"
-            echo "deleted=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Step 2: Clone source and commit new files
+      - name: Step 2: Clone source repository
         run: |
-          echo "=== 第二步：重新克隆并提交 ==="
+          echo "=== 第二步：重新克隆源仓库 ==="
           
           # 确保 meta 目录被完全删除（二次确认）
-          rm -rf meta
+          rm -rf meta 2>/dev/null || true
           
           echo "📥 克隆源仓库到 meta 目录..."
           
@@ -120,8 +63,11 @@ jobs:
           rm -rf meta/.github 2>/dev/null || true
           
           echo "✅ 克隆完成"
+
+      - name: Step 3: Remove .dat files
+        run: |
+          echo "=== 第三步：检查 .dat 文件 ==="
           
-          # 检查 .dat 文件
           echo "🔍 检查是否有 .dat 文件..."
           if find meta -name "*.dat" -type f 2>/dev/null | grep -q .; then
             echo "发现 .dat 文件，正在删除..."
@@ -131,18 +77,18 @@ jobs:
             echo "✓ 没有 .dat 文件"
           fi
 
-      - name: Step 3: Add and commit new files
+      - name: Step 4: Commit all changes
         run: |
-          echo "=== 第三步：添加并提交新文件 ==="
+          echo "=== 第四步：提交所有更改 ==="
           
-          # 添加所有新文件
+          # 添加所有变化
           git add -A
           
           # 获取文件统计
-          FILES_ADDED=$(find meta -type f | wc -l)
-          FOLDERS_ADDED=$(find meta -type d | wc -l)
+          FILES_COUNT=$(find meta -type f 2>/dev/null | wc -l)
+          FOLDERS_COUNT=$(find meta -type d 2>/dev/null | tail -n +2 | wc -l)
           
-          echo "新增：$FILES_ADDED 个文件，$FOLDERS_ADDED 个目录"
+          echo "文件统计：$FILES_COUNT 个文件，$FOLDERS_COUNT 个目录"
           
           # 构建提交信息
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
@@ -161,8 +107,8 @@ jobs:
           - 源仓库: MetaCubeX/meta-rules-dat@meta 分支
           - 同步时间: $TIMESTAMP
           - 同步类型: $SYNC_TYPE
-          - 新增文件数: $FILES_ADDED
-          - 新增目录数: $FOLDERS_ADDED
+          - 文件数量: $FILES_COUNT
+          - 目录数量: $FOLDERS_COUNT
           - 触发方式: ${{ github.event_name }}
           - 同步方式: 全新克隆（确保完全一致）
 
@@ -171,13 +117,13 @@ jobs:
           echo "提交信息:"
           echo "$COMMIT_MSG"
           
-          # 提交新文件
+          # 提交所有更改
           git commit -m "$COMMIT_MSG"
           
           # 推送更新
           git push origin main
           
-          echo "✅ 已提交并推送新增文件"
+          echo "✅ 已提交并推送更新"
 
       - name: Final summary
         run: |
@@ -185,7 +131,7 @@ jobs:
           echo "完成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "触发方式: ${{ github.event_name }}"
           
-          echo "✅ 结果: 已完成全新同步（两步提交）"
+          echo "✅ 结果: 已完成全新同步"
           
           echo ""
           echo "meta 目录最终状态:"
@@ -193,25 +139,18 @@ jobs:
             ls -la meta/
             
             echo ""
-            echo "目录统计:"
+            echo "各目录详情:"
             for dir in meta/*/; do
               if [ -d "$dir" ]; then
                 dir_name=$(basename "$dir")
-                file_count=$(find "$dir" -type f | wc -l)
-                dir_time=$(stat -c %y "$dir" 2>/dev/null || stat -f %Sm "$dir" 2>/dev/null || echo "unknown")
-                echo "  📁 $dir_name: $file_count 个文件, 更新时间: $dir_time"
+                file_count=$(find "$dir" -type f 2>/dev/null | wc -l)
+                echo "  📁 $dir_name: $file_count 个文件"
               fi
             done
           else
             echo "❌ 错误: meta 目录不存在"
             exit 1
           fi
-          
-          echo ""
-          echo "同步验证:"
-          echo "1. ✅ 删除操作已提交"
-          echo "2. ✅ 新增文件已提交"
-          echo "3. ✅ 目录时间戳已更新"
           
           echo ""
           echo "任务状态: 完成 ✓"
