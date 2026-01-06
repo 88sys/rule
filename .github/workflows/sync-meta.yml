@@ -1,13 +1,10 @@
-# 文件名: .github/workflows/sync-meta.yml
-# 日常使用的同步工作流 - 与源仓库完全一致
-
 name: Sync Meta Folders
 
 on:
   schedule:
-    - cron: '30 18 * * *'  # UTC 18:30 = 北京时间第二天 2:30
-    - cron: '30 6 * * *'   # UTC 6:30 = 北京时间 14:30
-  workflow_dispatch:  # 手动触发
+    - cron: '30 18 * * *'
+    - cron: '30 6 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -32,8 +29,6 @@ jobs:
       - name: Step 1: Delete meta directory
         run: |
           echo "=== 第一步：删除 meta 目录 ==="
-          
-          # 检查并记录删除前的状态
           if [ -d "meta" ]; then
             echo "找到 meta 目录，正在删除..."
             rm -rf meta
@@ -45,29 +40,17 @@ jobs:
       - name: Step 2: Clone source repository
         run: |
           echo "=== 第二步：重新克隆源仓库 ==="
-          
-          # 确保 meta 目录被完全删除（二次确认）
           rm -rf meta 2>/dev/null || true
-          
           echo "📥 克隆源仓库到 meta 目录..."
-          
-          # 直接克隆源仓库到 meta 目录
           git clone --depth=1 --branch=meta https://github.com/MetaCubeX/meta-rules-dat.git meta
-          
           echo "克隆完成，清理不需要的目录..."
-          
-          # 删除源仓库的 .git 目录（我们不想要子仓库）
           rm -rf meta/.git
-          
-          # 确保没有 .github 目录（如果源仓库有）
           rm -rf meta/.github 2>/dev/null || true
-          
           echo "✅ 克隆完成"
 
       - name: Step 3: Remove .dat files
         run: |
           echo "=== 第三步：检查 .dat 文件 ==="
-          
           echo "🔍 检查是否有 .dat 文件..."
           if find meta -name "*.dat" -type f 2>/dev/null | grep -q .; then
             echo "发现 .dat 文件，正在删除..."
@@ -80,49 +63,34 @@ jobs:
       - name: Step 4: Commit all changes
         run: |
           echo "=== 第四步：提交所有更改 ==="
-          
-          # 添加所有变化
           git add -A
-          
-          # 获取文件统计
           FILES_COUNT=$(find meta -type f 2>/dev/null | wc -l)
           FOLDERS_COUNT=$(find meta -type d 2>/dev/null | tail -n +2 | wc -l)
-          
           echo "文件统计：$FILES_COUNT 个文件，$FOLDERS_COUNT 个目录"
-          
-          # 构建提交信息
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             SYNC_TYPE="手动同步"
           else
             SYNC_TYPE="定时同步"
           fi
-          
           COMMIT_MSG="🔄 $SYNC_TYPE: 完成 meta 目录同步
 
-          保持与源仓库完全一致，同步所有文件夹和文件。
+保持与源仓库完全一致，同步所有文件夹和文件。
 
-          详细信息:
-          - 源仓库: MetaCubeX/meta-rules-dat@meta 分支
-          - 同步时间: $TIMESTAMP
-          - 同步类型: $SYNC_TYPE
-          - 文件数量: $FILES_COUNT
-          - 目录数量: $FOLDERS_COUNT
-          - 触发方式: ${{ github.event_name }}
-          - 同步方式: 全新克隆（确保完全一致）
+详细信息:
+- 源仓库: MetaCubeX/meta-rules-dat@meta 分支
+- 同步时间: $TIMESTAMP
+- 同步类型: $SYNC_TYPE
+- 文件数量: $FILES_COUNT
+- 目录数量: $FOLDERS_COUNT
+- 触发方式: ${{ github.event_name }}
+- 同步方式: 全新克隆（确保完全一致）
 
-          由 GitHub Actions 自动执行"
-          
+由 GitHub Actions 自动执行"
           echo "提交信息:"
           echo "$COMMIT_MSG"
-          
-          # 提交所有更改
           git commit -m "$COMMIT_MSG"
-          
-          # 推送更新
           git push origin main
-          
           echo "✅ 已提交并推送更新"
 
       - name: Final summary
@@ -130,14 +98,11 @@ jobs:
           echo "=== 同步任务完成 ==="
           echo "完成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "触发方式: ${{ github.event_name }}"
-          
           echo "✅ 结果: 已完成全新同步"
-          
           echo ""
           echo "meta 目录最终状态:"
           if [ -d "meta" ]; then
             ls -la meta/
-            
             echo ""
             echo "各目录详情:"
             for dir in meta/*/; do
@@ -151,6 +116,5 @@ jobs:
             echo "❌ 错误: meta 目录不存在"
             exit 1
           fi
-          
           echo ""
           echo "任务状态: 完成 ✓"
