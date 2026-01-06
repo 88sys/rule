@@ -2,8 +2,9 @@ name: Sync Mirror Repositories
 
 on:
   schedule:
-    # UTC时间：18:30 和 06:30，对应北京时间 02:30 和 14:30
-    - cron: '30 18,6 * * *'
+    # 每天北京时间 07:20 和 19:20 自动运行，同步所有fork仓库
+    - cron: '20 7,19 * * *'
+      timezone: Asia/Shanghai
   workflow_dispatch:  # 手动触发，没有额外选项
 
 jobs:
