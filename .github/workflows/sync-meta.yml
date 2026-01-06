@@ -15,7 +15,7 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 2  # 应该很快完成
+    timeout-minutes: 2
     
     steps:
       - name: Checkout repository
@@ -41,88 +41,79 @@ jobs:
           echo "源仓库内容 (最新状态):"
           ls -la "$SOURCE_DIR/"
 
-      - name: Debug - Check source directory timestamps
+      - name: Force delete and recreate meta directory
         run: |
-          SOURCE_DIR="${{ steps.clone_source.outputs.source_dir }}"
-          
-          echo "🔍 检查源仓库目录时间戳:"
-          for dir in "$SOURCE_DIR"/*/; do
-            if [ -d "$dir" ]; then
-              dir_name=$(basename "$dir")
-              # 使用stat获取目录修改时间
-              dir_time=$(stat -c %y "$dir" 2>/dev/null || stat -f %Sm "$dir" 2>/dev/null || echo "unknown")
-              file_count=$(find "$dir" -type f | wc -l)
-              echo "  $dir_name: $file_count 个文件, 目录时间: $dir_time"
-            fi
-          done
-
-      - name: Debug - Check current meta directory timestamps
-        run: |
-          echo "🔍 检查当前 meta 目录时间戳:"
-          if [ -d "meta" ]; then
-            for dir in meta/*/; do
-              if [ -d "$dir" ]; then
-                dir_name=$(basename "$dir")
-                dir_time=$(stat -c %y "$dir" 2>/dev/null || stat -f %Sm "$dir" 2>/dev/null || echo "unknown")
-                file_count=$(find "$dir" -type f | wc -l)
-                echo "  $dir_name: $file_count 个文件, 目录时间: $dir_time"
-              fi
-            done
-          else
-            echo "  meta 目录不存在"
-          fi
-
-      - name: Force sync - Complete replacement
-        run: |
-          SOURCE_DIR="${{ steps.clone_source.outputs.source_dir }}"
-          
-          echo "🔄 强制同步 - 完全替换..."
-          
-          # 完全删除旧的 meta 目录
+          echo "🗑️  强制删除 meta 目录..."
           rm -rf meta
           
-          # 重新创建并复制所有内容
+          echo "📁 重新创建 meta 目录..."
           mkdir -p meta
+
+      - name: Copy files and update timestamps
+        run: |
+          SOURCE_DIR="${{ steps.clone_source.outputs.source_dir }}"
           
-          echo "复制文件中..."
+          echo "📋 复制文件并更新时间戳..."
           
-          # 复制所有文件和目录，但不包括 .git
-          for item in "$SOURCE_DIR"/*; do
-            # 排除 .git 和 .github 目录
-            if [[ "$item" != *"/.git" && "$item" != *"/.github" ]]; then
-              cp -r "$item" "meta/"
-              echo "  已复制: $(basename "$item")"
-            fi
+          # 复制所有文件，并更新时间戳为当前时间
+          # 使用 tar 可以保持目录结构并更新时间戳
+          cd "$SOURCE_DIR"
+          
+          # 查找所有文件（不包括 .git 和 .github）
+          find . -type f -name "*" ! -path "./.git/*" ! -path "./.github/*" | while read file; do
+            # 创建目标目录
+            mkdir -p "../work/meta/$(dirname "$file")"
+            # 复制文件并更新时间戳
+            cp -p "$file" "../work/meta/$file"
           done
           
-          echo "✅ 同步完成"
+          # 移动回工作目录
+          cd ../work
+          
+          echo "✅ 文件复制完成"
 
-      - name: Verify sync result
+      - name: Verify the copy
         run: |
-          echo "🔍 验证同步结果:"
-          echo "同步后的 meta 目录:"
+          echo "🔍 验证复制结果..."
+          
+          echo "meta 目录内容:"
           ls -la meta/
           
           echo ""
-          echo "各目录文件数量:"
+          echo "各目录的详细内容:"
           for dir in meta/*/; do
             if [ -d "$dir" ]; then
               dir_name=$(basename "$dir")
               file_count=$(find "$dir" -type f | wc -l)
-              echo "  $dir_name: $file_count 个文件"
+              latest_file=$(find "$dir" -type f -printf '%T+ %p\n' 2>/dev/null | sort -r | head -1)
+              echo "  📁 $dir_name: $file_count 个文件"
+              if [ -n "$latest_file" ]; then
+                echo "     最新文件: $latest_file"
+              fi
             fi
           done
 
       - name: Remove any .dat files
         run: |
           echo "🔍 检查 .dat 文件..."
-          if find meta -name "*.dat" -type f 2>/dev/null | grep -q .; then
-            echo "发现 .dat 文件，正在删除..."
+          DAT_FILES=$(find meta -name "*.dat" -type f 2>/dev/null)
+          if [ -n "$DAT_FILES" ]; then
+            echo "发现 .dat 文件:"
+            echo "$DAT_FILES"
             find meta -name "*.dat" -type f -delete
             echo "✅ 已删除 .dat 文件"
           else
             echo "✓ 没有 .dat 文件"
           fi
+
+      - name: Update all file timestamps to current time
+        run: |
+          echo "🕐 更新所有文件时间戳为当前时间..."
+          
+          # 更新所有文件的时间戳为当前时间
+          find meta -type f -exec touch {} +
+          
+          echo "✅ 时间戳已更新"
 
       - name: Check for git changes
         id: check_git
@@ -131,10 +122,10 @@ jobs:
           
           # 先查看状态
           echo "Git 状态:"
-          git status --porcelain meta/ || true
+          git status --porcelain || true
           
-          # 添加变化
-          git add meta
+          # 添加所有变化
+          git add -A
           
           # 检查是否有待提交的更改
           if git diff --cached --quiet; then
@@ -147,10 +138,10 @@ jobs:
             echo "changed_count=$CHANGED_COUNT" >> $GITHUB_OUTPUT
             
             echo "变化文件列表:"
-            git diff --cached --name-only
+            git diff --cached --name-only | head -20
           fi
 
-      - name: Commit and push if changes found
+      - name: Commit and push changes
         if: steps.check_git.outputs.has_changes == 'true'
         run: |
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
@@ -182,29 +173,37 @@ jobs:
           
           echo "✅ 已提交并推送更新"
 
-      - name: Create empty commit if no changes (for debugging)
+      - name: Force commit if no changes detected
         if: steps.check_git.outputs.has_changes == 'false'
         run: |
-          echo "⚠️  没有检测到文件变化，但同步已执行"
-          echo "创建空提交用于调试..."
+          echo "⚠️  没有检测到文件变化，强制提交以记录同步..."
           
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           
-          COMMIT_MSG="🔍 调试: 同步检查
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SYNC_TYPE="手动同步"
+          else
+            SYNC_TYPE="定时同步"
+          fi
+          
+          COMMIT_MSG="📝 $SYNC_TYPE: 强制更新记录
 
-          同步检查完成，但未检测到文件变化。
+          同步操作已完成，但未检测到文件变化。
+          这可能是由于文件内容相同，但时间戳已更新。
 
           详细信息:
-          - 检查时间: $TIMESTAMP
+          - 同步时间: $TIMESTAMP
+          - 同步类型: $SYNC_TYPE
           - 触发方式: ${{ github.event_name }}
-          - 状态: 文件已是最新或同步未产生变化
 
           由 GitHub Actions 自动执行"
           
-          git commit --allow-empty -m "$COMMIT_MSG"
+          # 添加所有文件
+          git add -A
+          git commit -m "$COMMIT_MSG"
           git push origin main
           
-          echo "✅ 已创建调试提交"
+          echo "✅ 已强制提交更新"
 
       - name: Cleanup
         if: always()
@@ -224,13 +223,23 @@ jobs:
           if [ "${{ steps.check_git.outputs.has_changes }}" = "true" ]; then
             echo "✅ 结果: 已同步并提交 ${{ steps.check_git.outputs.changed_count }} 个文件更新"
           else
-            echo "⚠️  结果: 未检测到文件变化"
+            echo "⚠️  结果: 未检测到文件内容变化，已强制提交"
           fi
           
           echo ""
           echo "meta 目录最终状态:"
           if [ -d "meta" ]; then
             ls -la meta/
+            
+            echo ""
+            echo "各目录统计:"
+            for dir in meta/*/; do
+              if [ -d "$dir" ]; then
+                dir_name=$(basename "$dir")
+                file_count=$(find "$dir" -type f | wc -l)
+                echo "  📁 $dir_name: $file_count 个文件"
+              fi
+            done
           fi
           
           echo ""
