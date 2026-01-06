@@ -1,95 +1,164 @@
-# 文件名: .github/workflows/delete-meta-folder.yml
-# 删除 meta 文件夹工作流
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
+    with:
+      token: ${{ secrets.GITHUB_TOKEN }}
+      fetch-depth: 1
 
-name: Delete Meta Folder
+  - name: Setup Git
+    run: |
+      git config user.name "github-actions[bot]"
+      git config user.email "github-actions[bot]@users.noreply.github.com"
 
-on:
-  workflow_dispatch:  # 仅手动触发
+  - name: Delete meta directory if exists
+    run: |
+      echo "🗑️  删除 meta 目录..."
+      
+      if [ -d "meta" ]; then
+        echo "找到 meta 目录，正在删除..."
+        rm -rf meta
+        echo "✅ meta 目录已删除"
+      else
+        echo "ℹ️  meta 目录不存在，无需删除"
+      fi
 
-permissions:
-  contents: write
+  - name: Clone source repository to meta directory
+    run: |
+      echo "📥 克隆源仓库到 meta 目录..."
+      
+      # 直接克隆源仓库到 meta 目录
+      git clone --depth=1 --branch=meta https://github.com/MetaCubeX/meta-rules-dat.git meta
+      
+      echo "克隆完成，清理不需要的目录..."
+      
+      # 删除源仓库的 .git 目录（我们不想要子仓库）
+      rm -rf meta/.git
+      
+      # 确保没有 .github 目录（如果源仓库有）
+      rm -rf meta/.github 2>/dev/null || true
+      
+      echo "✅ 克隆完成"
 
-jobs:
-  delete-meta:
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 1
+  - name: Verify sync result
+    run: |
+      echo "🔍 验证同步结果..."
+      
+      echo "meta 目录内容:"
+      ls -la meta/
+      
+      echo ""
+      echo "各目录文件统计:"
+      for dir in meta/*/; do
+        if [ -d "$dir" ]; then
+          dir_name=$(basename "$dir")
+          file_count=$(find "$dir" -type f | wc -l)
+          echo "  📁 $dir_name: $file_count 个文件"
+        fi
+      done
 
-      - name: Setup Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+  - name: Remove any .dat files (safety check)
+    run: |
+      echo "🔍 检查是否有 .dat 文件..."
+      
+      if find meta -name "*.dat" -type f 2>/dev/null | grep -q .; then
+        echo "发现 .dat 文件，正在删除..."
+        find meta -name "*.dat" -type f -delete
+        echo "✅ 已删除 .dat 文件"
+      else
+        echo "✓ 没有 .dat 文件"
+      fi
 
-      - name: Delete meta folder
-        run: |
-          echo "🗑️  删除 meta 文件夹..."
-          
-          if [ -d "meta" ]; then
-            echo "找到 meta 目录，正在删除..."
-            rm -rf meta
-            echo "✅ meta 目录已删除"
-          else
-            echo "ℹ️  meta 目录不存在，无需删除"
+  - name: Check for git changes
+    id: check_git
+    run: |
+      echo "📊 检查 Git 变化..."
+      
+      # 添加所有变化
+      git add -A
+      
+      # 检查是否有待提交的更改
+      if git diff --cached --quiet; then
+        echo "ℹ️  没有检测到 Git 变化"
+        echo "has_git_changes=false" >> $GITHUB_OUTPUT
+      else
+        CHANGED_COUNT=$(git diff --cached --name-only | wc -l)
+        echo "📝 检测到 $CHANGED_COUNT 个文件变化"
+        echo "has_git_changes=true" >> $GITHUB_OUTPUT
+        echo "changed_count=$CHANGED_COUNT" >> $GITHUB_OUTPUT
+        
+        echo "变化文件列表:"
+        git diff --cached --name-only | head -10
+      fi
+
+  - name: Commit and push changes
+    if: steps.check_git.outputs.has_git_changes == 'true'
+    run: |
+      TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+      CHANGED_COUNT="${{ steps.check_git.outputs.changed_count }}"
+      
+      if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+        SYNC_TYPE="手动同步"
+      else
+        SYNC_TYPE="定时同步"
+      fi
+      
+      COMMIT_MSG="🔄 $SYNC_TYPE: 更新 MetaCubeX meta 文件夹
+      
+      保持与源仓库完全一致，同步所有文件夹和文件。
+      
+      详细信息:
+      - 源仓库: MetaCubeX/meta-rules-dat@meta 分支
+      - 同步时间: $TIMESTAMP
+      - 同步类型: $SYNC_TYPE
+      - 变化文件数: $CHANGED_COUNT
+      - 触发方式: ${{ github.event_name }}
+      
+      由 GitHub Actions 自动同步"
+      
+      git commit -m "$COMMIT_MSG"
+      git push origin main
+      
+      echo "✅ 已提交并推送更新"
+
+  - name: No changes needed
+    if: steps.check_git.outputs.has_git_changes == 'false'
+    run: |
+      echo "🎉 已是最新版本，无需更新"
+      echo "当前 meta 目录结构:"
+      ls -la meta/
+      echo ""
+      echo "与源仓库完全一致 ✓"
+
+  - name: Final summary
+    run: |
+      echo "=== 同步任务完成 ==="
+      echo "完成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+      echo "触发方式: ${{ github.event_name }}"
+      
+      if [ "${{ steps.check_git.outputs.has_git_changes }}" = "true" ]; then
+        echo "✅ 结果: 已同步并提交 ${{ steps.check_git.outputs.changed_count }} 个文件更新"
+      else
+        echo "ℹ️  结果: 无变化，无需更新"
+      fi
+      
+      echo ""
+      echo "meta 目录最终状态:"
+      if [ -d "meta" ]; then
+        ls -la meta/
+        
+        echo ""
+        echo "目录时间戳:"
+        for dir in meta/*/; do
+          if [ -d "$dir" ]; then
+            dir_name=$(basename "$dir")
+            dir_time=$(stat -c %y "$dir" 2>/dev/null || stat -f %Sm "$dir" 2>/dev/null || echo "unknown")
+            file_count=$(find "$dir" -type f | wc -l)
+            echo "  📁 $dir_name: $file_count 个文件, 更新时间: $dir_time"
           fi
-
-      - name: Check if there are changes
-        id: check_changes
-        run: |
-          echo "📊 检查 Git 变化..."
-          
-          git add -A
-          
-          if git diff --cached --quiet; then
-            echo "没有检测到变化"
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-          else
-            echo "检测到变化"
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Commit and push if changes
-        if: steps.check_changes.outputs.has_changes == 'true'
-        run: |
-          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          
-          COMMIT_MSG="🗑️ 删除 meta 文件夹
-
-          删除不再需要的 meta 文件夹。
-
-          详细信息:
-          - 删除时间: $TIMESTAMP
-          - 操作: 删除整个 meta 目录
-
-          由 GitHub Actions 手动触发执行"
-          
-          git commit -m "$COMMIT_MSG"
-          git push origin main
-          
-          echo "✅ 已提交并推送删除操作"
-
-      - name: No changes needed
-        if: steps.check_changes.outputs.has_changes == 'false'
-        run: |
-          echo "ℹ️  没有变化需要提交（meta 文件夹可能已不存在）"
-
-      - name: Final verification
-        run: |
-          echo "=== 操作完成 ==="
-          echo "完成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          
-          if [ -d "meta" ]; then
-            echo "❌ meta 文件夹仍然存在"
-            exit 1
-          else
-            echo "✅ meta 文件夹已成功删除"
-          fi
-          
-          echo ""
-          echo "当前目录结构:"
-          ls -la
+        done
+      else
+        echo "❌ 错误: meta 目录不存在"
+      fi
+      
+      echo ""
+      echo "任务状态: 完成 ✓"
