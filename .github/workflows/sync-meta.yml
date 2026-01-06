@@ -1,4 +1,4 @@
-# 文件名: .github/workflows/sync-meta-folders.yml
+# 文件名: .github/workflows/sync-meta.yml
 # 日常使用的同步工作流 - 与源仓库完全一致
 
 name: Sync Meta Folders Only
@@ -7,13 +7,7 @@ on:
   schedule:
     - cron: '30 18 * * *'  # UTC 18:30 = 北京时间第二天 2:30
     - cron: '30 6 * * *'   # UTC 6:30 = 北京时间 14:30
-  workflow_dispatch:
-    inputs:
-      force_sync:
-        description: '强制同步（即使无变化）'
-        required: false
-        default: 'false'
-        type: boolean
+  workflow_dispatch:   # 移除 force_sync 输入，直接每次都强制镜像同步
 
 permissions:
   contents: write
@@ -21,7 +15,7 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 10
     
     steps:
       - name: Checkout repository
@@ -41,125 +35,61 @@ jobs:
           SOURCE_DIR="/tmp/meta-source-$(date +%s)"
           echo "source_dir=$SOURCE_DIR" >> $GITHUB_OUTPUT
           
-          echo "📥 克隆源仓库 meta 分支..."
+          echo "克隆源仓库 meta 分支..."
           git clone --depth=1 --branch=meta https://github.com/MetaCubeX/meta-rules-dat.git "$SOURCE_DIR"
           
           echo "源仓库结构:"
           ls -la "$SOURCE_DIR/"
 
-      - name: Force delete and recreate meta directory
-        id: force_delete
+      - name: Force mirror sync meta folder
+        id: sync_folders
         run: |
-          echo "🔄 强制删除并重建 meta 目录..."
+          SOURCE_DIR="${{ steps.clone_source.outputs.source_dir }}"
           
-          # 记录原始文件列表（用于调试）
-          if [ -d "meta" ]; then
-            find meta -type f | sort > /tmp/before_delete.txt
-            echo "删除前有 $(wc -l < /tmp/before_delete.txt) 个文件"
-          fi
-          
-          # 完全删除 meta 目录
+          echo "删除旧的 meta 文件夹（确保干净环境）..."
           rm -rf meta
           
-          # 重新创建空目录
-          mkdir -p meta
+          echo "强制镜像同步（带 --delete，确保完全一致）..."
+          rsync -av --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            "$SOURCE_DIR/" "meta/"
           
-          echo "✅ 强制清理完成"
-
-      - name: Copy all files from source
-        id: copy_files
-        run: |
-          SOURCE_DIR="${{ steps.clone_source.outputs.source_dir }}"
+          echo "✅ 镜像同步完成"
           
-          echo "📋 复制所有文件..."
-          
-          # 使用简单直接的 cp 命令复制所有文件
-          # 先复制文件
-          find "$SOURCE_DIR" -type f ! -path "*/.git/*" ! -path "*/.github/*" -exec cp --parents {} meta/ \;
-          
-          echo "✅ 文件复制完成"
-          
-          # 显示复制后的结构
-          echo "复制后的 meta 目录结构:"
+          echo "同步后的 meta 目录结构:"
           ls -la meta/
           
-          # 记录复制后的文件列表
-          find meta -type f | sort > /tmp/after_copy.txt
-          echo "复制后有 $(wc -l < /tmp/after_copy.txt) 个文件"
+          # 统计文件夹数量（仅用于提交信息）
+          FOLDER_COUNT=$(find meta -maxdepth 1 -type d 2>/dev/null | tail -n +2 | wc -l)
+          echo "文件夹数量: $FOLDER_COUNT"
+          echo "folder_count=$FOLDER_COUNT" >> $GITHUB_OUTPUT
 
-      - name: Verify copy integrity
+      - name: Remove any .dat files (just in case)
         run: |
-          SOURCE_DIR="${{ steps.clone_source.outputs.source_dir }}"
-          
-          echo "🔍 验证复制完整性..."
-          
-          # 检查文件数量是否一致
-          SOURCE_COUNT=$(find "$SOURCE_DIR" -type f ! -path "*/.git/*" ! -path "*/.github/*" | wc -l)
-          TARGET_COUNT=$(find meta -type f | wc -l)
-          
-          echo "源仓库文件数: $SOURCE_COUNT"
-          echo "目标仓库文件数: $TARGET_COUNT"
-          
-          if [ "$SOURCE_COUNT" -eq "$TARGET_COUNT" ]; then
-            echo "✅ 文件数量一致"
-          else
-            echo "❌ 文件数量不一致"
-            echo "差异分析:"
-            
-            # 列出源仓库所有文件
-            find "$SOURCE_DIR" -type f ! -path "*/.git/*" ! -path "*/.github/*" -exec basename {} \; | sort > /tmp/source_files.txt
-            # 列出目标仓库所有文件
-            find meta -type f -exec basename {} \; | sort > /tmp/target_files.txt
-            
-            echo "在源仓库但不在目标仓库的文件:"
-            comm -23 /tmp/source_files.txt /tmp/target_files.txt || true
-            
-            echo "在目标仓库但不在源仓库的文件:"
-            comm -13 /tmp/source_files.txt /tmp/target_files.txt || true
-            
-            exit 1
-          fi
-
-      - name: Remove any .dat files
-        run: |
-          echo "🔍 检查 .dat 文件..."
-          
+          echo "确保没有 .dat 文件（与源仓库完全一致）..."
           if find meta -name "*.dat" -type f 2>/dev/null | grep -q .; then
             echo "发现 .dat 文件，正在删除..."
             find meta -name "*.dat" -type f -delete
             echo "✅ 已删除 .dat 文件"
           else
-            echo "✓ 没有 .dat 文件"
+            echo "✓ 没有 .dat 文件（正确）"
           fi
 
       - name: Check for git changes
         id: check_git
         run: |
-          echo "📊 检查 Git 变化..."
+          echo "检查 Git 变化..."
+          git add meta
           
-          # 先查看状态
-          echo "Git 状态:"
-          git status --porcelain meta/ || true
-          
-          # 添加 meta 目录
-          git add meta/
-          
-          # 检查是否有待提交的更改
           if git diff --cached --quiet; then
-            echo "ℹ️  没有检测到 Git 变化"
+            echo "没有 Git 变化"
             echo "has_git_changes=false" >> $GITHUB_OUTPUT
           else
             CHANGED_COUNT=$(git diff --cached --name-only | wc -l)
-            echo "📝 检测到 $CHANGED_COUNT 个文件变化"
+            echo "有 $CHANGED_COUNT 个文件变化"
             echo "has_git_changes=true" >> $GITHUB_OUTPUT
             echo "changed_count=$CHANGED_COUNT" >> $GITHUB_OUTPUT
-            
-            echo "变化文件列表:"
-            git diff --cached --name-only | head -10
-            
-            # 显示变化的类型
-            echo "变化类型统计:"
-            git status --porcelain meta/ | cut -c1-2 | sort | uniq -c
           fi
 
       - name: Commit and push changes
@@ -168,23 +98,17 @@ jobs:
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           CHANGED_COUNT="${{ steps.check_git.outputs.changed_count }}"
           
-          if [ "${{ github.event.inputs.force_sync }}" = "true" ]; then
-            SYNC_TYPE="强制同步"
-          else
-            SYNC_TYPE="自动同步"
-          fi
+          COMMIT_MSG="🔄 自动同步: 更新 MetaCubeX meta 文件夹
           
-          COMMIT_MSG="🔄 $SYNC_TYPE: 更新 MetaCubeX meta 文件夹
-          
-          保持与源仓库完全一致，同步所有文件夹和文件。
+          保持与源仓库完全一致，镜像所有文件夹和文件（包含删除操作）。
           
           详细信息:
           - 源仓库: MetaCubeX/meta-rules-dat@meta
           - 同步时间: $TIMESTAMP
-          - 同步类型: $SYNC_TYPE
           - 变化文件数: $CHANGED_COUNT
+          - 文件夹数: ${{ steps.sync_folders.outputs.folder_count }}
           
-          由 GitHub Actions 自动同步"
+          由 GitHub Actions 自动镜像同步"
           
           git commit -m "$COMMIT_MSG"
           git push origin main
@@ -209,33 +133,17 @@ jobs:
             rm -rf "$SOURCE_DIR"
             echo "✅ 已清理临时目录"
           fi
-          
-          # 清理临时文件
-          rm -f /tmp/before_delete.txt /tmp/after_copy.txt 2>/dev/null || true
-          rm -f /tmp/source_files.txt /tmp/target_files.txt 2>/dev/null || true
 
       - name: Final verification
         run: |
           echo "=== 最终验证 ==="
-          echo "同步完成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          echo "同步结果: ${{ steps.check_git.outputs.has_git_changes == 'true' && '✅ 已更新' || 'ℹ️  无变化' }}"
+          echo "同步完成时间: $(date)"
+          echo "同步结果: ${{ steps.check_git.outputs.has_git_changes == 'true' && '已更新' || '无变化' }}"
           
           if [ -d "meta" ]; then
             echo "meta 目录内容:"
             ls -la meta/
             
-            # 显示每个目录的详细信息
-            echo ""
-            echo "各目录详情:"
-            for dir in meta/*/; do
-              if [ -d "$dir" ]; then
-                dir_name=$(basename "$dir")
-                file_count=$(find "$dir" -type f | wc -l)
-                echo "  📁 $dir_name: $file_count 个文件"
-              fi
-            done
-            
-            # 检查是否有 .dat 文件
             DAT_FILES=$(find meta -name "*.dat" -type f 2>/dev/null | wc -l)
             if [ "$DAT_FILES" -eq 0 ]; then
               echo "✅ 验证通过: 没有 .dat 文件（与源仓库一致）"
