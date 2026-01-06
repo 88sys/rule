@@ -26,7 +26,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Step 1: Delete meta directory
+      - name: Delete meta directory
         run: |
           echo "=== 第一步：删除 meta 目录 ==="
           if [ -d "meta" ]; then
@@ -37,7 +37,7 @@ jobs:
             echo "ℹ️  meta 目录不存在，无需删除"
           fi
 
-      - name: Step 2: Clone source repository
+      - name: Clone source repository
         run: |
           echo "=== 第二步：重新克隆源仓库 ==="
           rm -rf meta 2>/dev/null || true
@@ -48,7 +48,7 @@ jobs:
           rm -rf meta/.github 2>/dev/null || true
           echo "✅ 克隆完成"
 
-      - name: Step 3: Remove .dat files
+      - name: Remove .dat files
         run: |
           echo "=== 第三步：检查 .dat 文件 ==="
           echo "🔍 检查是否有 .dat 文件..."
@@ -60,20 +60,24 @@ jobs:
             echo "✓ 没有 .dat 文件"
           fi
 
-      - name: Step 4: Commit all changes
+      - name: Commit all changes
         run: |
           echo "=== 第四步：提交所有更改 ==="
           git add -A
           FILES_COUNT=$(find meta -type f 2>/dev/null | wc -l)
           FOLDERS_COUNT=$(find meta -type d 2>/dev/null | tail -n +2 | wc -l)
           echo "文件统计：$FILES_COUNT 个文件，$FOLDERS_COUNT 个目录"
+          
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             SYNC_TYPE="手动同步"
           else
             SYNC_TYPE="定时同步"
           fi
-          COMMIT_MSG="🔄 $SYNC_TYPE: 完成 meta 目录同步
+          
+          # 使用cat创建多行提交信息
+          COMMIT_MSG=$(cat << EOF
+🔄 $SYNC_TYPE: 完成 meta 目录同步
 
 保持与源仓库完全一致，同步所有文件夹和文件。
 
@@ -86,7 +90,10 @@ jobs:
 - 触发方式: ${{ github.event_name }}
 - 同步方式: 全新克隆（确保完全一致）
 
-由 GitHub Actions 自动执行"
+由 GitHub Actions 自动执行
+EOF
+)
+          
           echo "提交信息:"
           echo "$COMMIT_MSG"
           git commit -m "$COMMIT_MSG"
