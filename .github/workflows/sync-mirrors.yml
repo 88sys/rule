@@ -2,10 +2,18 @@ name: Sync Mirror Repositories
 
 on:
   schedule:
-    # 每天北京时间 07:20 和 19:20 自动运行，同步所有fork仓库
-    - cron: '20 7,19 * * *'
-      timezone: Asia/Shanghai
+    # 修正：北京时间 07:20 (UTC 23:20) 和 19:20 (UTC 11:20)
+    - cron: '20 11,23 * * *'
   workflow_dispatch:  # 手动触发，没有额外选项
+
+# 优化：排队而不是杀掉正在进行的同步，防止 git push 被中断
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# 安全：最小化 GITHUB_TOKEN 权限
+permissions:
+  contents: read
 
 jobs:
   sync-mirror:
@@ -17,9 +25,9 @@ jobs:
         run: |
           echo "=== 镜像同步任务启动 ==="
           echo "触发方式: ${{ github.event_name }}"
-          echo "触发时间 (UTC): $(date '+%Y-%m-%d %H:%M:%S')"
-          echo "北京时间: $(date -d '+8 hours' '+%Y-%m-%d %H:%M:%S')"
           echo "运行ID: ${{ github.run_id }}"
+          echo "UTC时间: $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "北京时间: $(date -u '+%Y-%m-%d %H:%M:%S' -d '+8 hours')"
 
       - name: 2. 设置SSH密钥对
         run: |
@@ -57,34 +65,41 @@ jobs:
           echo "  - github-88alt -> id_ed25519_88alt"
 
       - name: 3. 验证SSH连接
+        shell: bash
         run: |
           echo "验证SSH密钥连接..."
           
-          # 测试第一个密钥
+          EXIT_CODE=0
+          
+          # 关键修复：使用 (ssh || true) 避免 SSH 的退出码 1 导致管道失败
           echo "测试 timeflysoon 仓库连接..."
-          if ssh -T git@github-timeflysoon 2>&1 | grep -q "timeflysoon"; then
+          if (ssh -T git@github-timeflysoon 2>&1 || true) | grep -q "timeflysoon"; then
             echo "✅ 密钥 timeflysoon 连接成功"
           else
             echo "❌ 密钥 timeflysoon 连接失败"
-            exit 1
+            EXIT_CODE=1
           fi
           
           # 测试第二个密钥
           echo "测试 88alt 仓库连接..."
-          if ssh -T git@github-88alt 2>&1 | grep -q "88alt"; then
+          if (ssh -T git@github-88alt 2>&1 || true) | grep -q "88alt"; then
             echo "✅ 密钥 88alt 连接成功"
           else
             echo "❌ 密钥 88alt 连接失败"
-            exit 1
+            EXIT_CODE=1
           fi
           
-          echo "所有SSH连接验证通过"
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ 所有SSH连接验证通过"
+          else
+            echo "❌ SSH连接验证失败"
+            exit 1
+          fi
 
       - name: 4. 配置Git
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
-          git config --global core.sshCommand "ssh -F ~/.ssh/config"
           git config --global init.defaultBranch main
           echo "✅ Git配置完成"
 
@@ -151,9 +166,8 @@ jobs:
           cd ..
 
       - name: 6. 执行镜像同步
+        id: sync_step
         run: |
-          set -e
-          
           cd meta-rules-dat.git
           
           echo "=== 开始同步镜像仓库 $(date '+%Y-%m-%d %H:%M:%S') UTC ==="
@@ -165,6 +179,7 @@ jobs:
           )
           
           SYNC_START_TIME=$(date +%s)
+          FAIL_COUNT=0
           
           for TARGET_REPO in "${TARGET_REPOS[@]}"; do
             REPO_HOST=$(echo "$TARGET_REPO" | cut -d'@' -f2 | cut -d':' -f1)
@@ -173,6 +188,7 @@ jobs:
             echo "=== 推送镜像到: $REPO_HOST/$REPO_PATH ==="
             
             REPO_START_TIME=$(date +%s)
+            PUSH_SUCCESS=false
             
             MAX_RETRY=2
             for i in $(seq 1 $MAX_RETRY); do
@@ -186,21 +202,34 @@ jobs:
                 
                 echo "✅ 推送成功"
                 echo "  分支: $BRANCHES_COUNT, 标签: $TAGS_COUNT, 耗时: ${REPO_DURATION}秒"
+                PUSH_SUCCESS=true
                 break
               elif [ $i -eq $MAX_RETRY ]; then
                 echo "❌ 推送失败（已达最大重试次数）"
-                break
               else
                 echo "推送失败，10秒后重试 ($i/$MAX_RETRY)..."
                 sleep 10
               fi
             done
+            
+            if [ "$PUSH_SUCCESS" = false ]; then
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+              echo "⚠️ 标记此仓库同步失败"
+            fi
           done
           
           SYNC_END_TIME=$(date +%s)
           TOTAL_DURATION=$((SYNC_END_TIME - SYNC_START_TIME))
           
           echo "=== 同步完成，总耗时: ${TOTAL_DURATION}秒 ==="
+          echo "=== 失败仓库数: ${FAIL_COUNT} ==="
+          
+          if [ $FAIL_COUNT -gt 0 ]; then
+            echo "❌ 有${FAIL_COUNT}个仓库同步失败"
+            exit 1
+          else
+            echo "✅ 所有仓库同步成功"
+          fi
 
       - name: 7. 清理敏感数据
         if: always()
@@ -230,14 +259,17 @@ jobs:
           echo "2. 88alt/meta-rules-dat（使用全名密钥）" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [[ "${{ job.status }}" == "success" ]]; then
+          # 获取同步步骤的结果
+          SYNC_OUTCOME="${{ steps.sync_step.outcome }}"
+          
+          if [[ "$SYNC_OUTCOME" == "success" ]]; then
             echo "✅ **执行结果**: 同步成功" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "两个目标仓库均已同步最新内容。" >> $GITHUB_STEP_SUMMARY
+            echo "所有目标仓库均已同步最新内容。" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **执行结果**: 同步失败" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "请查看上方日志排查问题。" >> $GITHUB_STEP_SUMMARY
+            echo "部分仓库同步失败，请查看上方日志排查问题。" >> $GITHUB_STEP_SUMMARY
           fi
           
           echo "" >> $GITHUB_STEP_SUMMARY
