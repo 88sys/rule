@@ -1,22 +1,17 @@
-name: 自动转换 list → mrs
+name: 自动转换 list → mrs (release 目录)
 
 on:
   push:
     branches: [ main ]
     paths:
-      - 'cn_domain-extra.list'
-      - 'proxy-extra.list'
+      - 'release/*.list'
   workflow_dispatch:
     inputs:
-      target:
-        description: '选择要转换哪个'
-        required: true
-        type: choice
-        default: both
-        options:
-          - both      # 两个都转（默认）
-          - cn_domain-extra   # 只转国内直连
-          - proxy-extra       # 只转代理规则
+      force:
+        description: '强制转换所有文件（忽略变更检测）'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -27,10 +22,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # 保持 fetch-depth: 0 以确保 git diff 正常工作
           fetch-depth: 0
 
-      - name: 下载 Clash Meta 内核（防 404）
+      # 【关键修复】恢复 Git 仓库中文件的真实修改时间戳
+      - name: 恢复文件的 Git 原始修改时间戳
+        uses: chetan/git-restore-mtime-action@v2
+
+      # 下载 Clash Meta 内核
+      - name: 下载 Clash Meta 内核
         run: |
           URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-v1.19.17.gz"
           wget -q "$URL" || wget -q "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-compatible-v1.19.17.gz"
@@ -39,66 +38,61 @@ jobs:
           chmod +x "${FILENAME%.gz}"
           mv "${FILENAME%.gz}" clash_meta
 
-      # ============ 确定转换目标（使用 Bash 默认值语法简化）============
-      - name: 确定转换目标
-        id: set-target
+      # 核心转换逻辑
+      - name: 转换所有 .list → .mrs
         run: |
-          # 使用bash变量默认值语法：如果input为空则设为both
-          SELECTED_TARGET="${{ github.event.inputs.target }}"
-          echo "TARGET=${SELECTED_TARGET:-both}" >> $GITHUB_OUTPUT
-          echo "转换目标: ${SELECTED_TARGET:-both}"
+          echo "开始扫描 release/ 目录下的 .list 文件..."
+          UPDATED=false
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
-      # ============ 生成 cn_domain-extra.mrs ============
-      - name: 生成 cn_domain-extra.mrs
-        if: steps.set-target.outputs.TARGET == 'both' || steps.set-target.outputs.TARGET == 'cn_domain-extra'
-        run: |
-          if [ -f cn_domain-extra.list ]; then
-            echo "开始转换 cn_domain-extra.list → cn_domain-extra.mrs"
-            ./clash_meta convert-ruleset domain text cn_domain-extra.list cn_domain-extra.mrs
-            echo "cn_domain-extra.mrs 生成完成"
-          else
-            echo "cn_domain-extra.list 不存在，跳过"
-          fi
+          for list_file in release/*.list; do
+            if [ ! -f "$list_file" ]; then
+              echo "未找到任何 .list 文件，跳过。"
+              exit 0
+            fi
 
-      # ============ 生成 proxy-extra.mrs ============
-      - name: 生成 proxy-extra.mrs
-        if: steps.set-target.outputs.TARGET == 'both' || steps.set-target.outputs.TARGET == 'proxy-extra'
-        run: |
-          if [ -f proxy-extra.list ]; then
-            echo "开始转换 proxy-extra.list → proxy-extra.mrs"
-            ./clash_meta convert-ruleset domain text proxy-extra.list proxy-extra.mrs
-            echo "proxy-extra.mrs 生成完成"
-          else
-            echo "proxy-extra.list 不存在，跳过"
-          fi
+            base_name=$(basename "$list_file" .list)
+            mrs_file="release/${base_name}.mrs"
 
-      # ============ 清理下载的内核文件 ============
-      - name: 清理 Clash Meta 内核
-        run: |
-          rm -f clash_meta
+            echo "检查: $list_file → $mrs_file"
 
-      # ============ 终极智能提交：只有真正变化才 push（最简最稳）============
-      - name: 智能提交（仅在 mrs 内容真正变化时才 commit + push）
+            # 转换条件：强制模式 或 .mrs不存在 或 .list 比 .mrs 新
+            if [[ "${{ github.event.inputs.force }}" == "true" ]] || \
+               [ ! -f "$mrs_file" ] || \
+               [ "$list_file" -nt "$mrs_file" ]; then
+              
+              echo "→ 执行转换: $list_file"
+              ./clash_meta convert-ruleset domain text "$list_file" "$mrs_file"
+              
+              if [ $? -eq 0 ]; then
+                echo "✓ 转换成功: $mrs_file"
+                UPDATED=true
+                touch "$mrs_file"   # 确保 mrs 文件时间戳更新为现在
+              else
+                echo "✗ 转换失败: $list_file"
+              fi
+            else
+              echo "○ 文件无变化，跳过转换"
+            fi
+          done
+
+          echo "UPDATED=$UPDATED" >> $GITHUB_ENV
+          echo "LAST_RUN=$TIMESTAMP" >> $GITHUB_ENV
+
+      # 智能提交
+      - name: 智能提交变更
+        if: env.UPDATED == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M")
-          TARGET="${{ steps.set-target.outputs.TARGET }}"
-
-          # 先把可能变化的文件加入暂存区
-          git add cn_domain-extra.mrs proxy-extra.mrs 2>/dev/null || true
-
-          # 神之一手：让 git 自己判断是否有实质变化（最可靠！）
+          git add release/*.mrs
+          
           if git diff --cached --quiet; then
-            echo "规则文件内容无任何变化，跳过提交，仓库保持绝对安静"
-            echo "last_run=$TIMESTAMP (no change, target: $TARGET)" >> $GITHUB_ENV
+            echo "文件时间戳有变化但内容无实质差异，跳过提交。"
             exit 0
           fi
 
-          # 到这里说明真的有变化，才提交
-          # 加上 [skip ci] 确保这次提交不会再次触发 Actions
-          git commit -m "chore: auto update ruleset(s) $TIMESTAMP (target: $TARGET) [skip ci]"
+          git commit -m "chore: auto update ruleset(s) ${LAST_RUN} [skip ci]"
           git push origin main
-          echo "检测到规则内容变更，已成功提交并推送"
-          echo "last_run=$TIMESTAMP (updated, target: $TARGET)" >> $GITHUB_ENV
+          echo "✅ 规则文件已更新并推送"
