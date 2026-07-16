@@ -327,10 +327,18 @@ jobs:
           # 之类)文件名大概率不含 "turboacc" 字样，漏了这些等于只装了个空壳
           # LuCI 界面，底层加速模块根本没打进去。
           #
+          # 【修复点 1】搜索范围必须同时包含 bin/packages 和 bin/targets：
+          # OpenWrt/ImmortalWrt 的构建产物分两处存放——bin/packages/<arch>/<feed>/
+          # 放的是跟内核版本无关的通用包(luci、base 等)；而 kmod-* 这类跟当前
+          # 编译内核 vermagic 绑定的内核模块包，只会出现在
+          # bin/targets/<target>/<subtarget>/packages/ 下。只搜 bin/packages
+          # 会导致 kmod-fast-classifier、kmod-shortcut-fe-cm 这些真正干活的
+          # 内核模块被漏掉，装出来的只是一个没有加速能力的 LuCI 空壳。
+          #
           # 注意：这里不按扩展名过滤(.ipk / .apk 都要)，因为不同分支/不同
           # 内核阶段 ImmortalWrt 实际产出的包格式并不统一，按扩展名过滤
           # 会在包管理器切换的分支上悄悄漏掉产物。
-          find openwrt/bin/packages -type f \( \
+          find openwrt/bin/packages openwrt/bin/targets -type f \( \
             -iname "*turboacc*" -o \
             -iname "*shortcut-fe*" -o \
             -iname "*fast-classifier*" -o \
@@ -355,17 +363,31 @@ jobs:
           # 校验(用户在路由器上执行时，文件传输损坏会被直接拦下来，而不是
           # 等 tar 解压到一半才报个不明所以的错)，比自己维护提取逻辑更稳。
           #
-          # 先探测一下"主包+中文包"在不在，在的话再决定要不要打包——但
-          # 实际塞进 PKGDIR 的是 artifact/packages 里已经筛好的全部
-          # turboacc 相关文件(含 shortcut-fe/fast-classifier/fullconenat
-          # 及对应 kmod)，不能只塞这两个，否则 .run 只剩一个 LuCI 壳子，
-          # 底层加速内核模块根本没带进去，等于白装。
+          # 先探测一下"主包+中文包"在不在——但实际塞进 PKGDIR 的是
+          # artifact/packages 里已经筛好的全部 turboacc 相关文件(含
+          # shortcut-fe/fast-classifier/fullconenat 及对应 kmod)，不能只塞
+          # 这两个，否则 .run 只剩一个 LuCI 壳子，底层加速内核模块根本没
+          # 带进去，等于白装。
           MAIN_PKG=$(find artifact/packages -maxdepth 1 -type f -iname "luci-app-turboacc_*" | head -n1 || true)
           I18N_PKG=$(find artifact/packages -maxdepth 1 -type f -iname "luci-i18n-turboacc-zh-cn_*" | head -n1 || true)
+          KMOD_COUNT=$(find artifact/packages -maxdepth 1 -type f -iname "kmod-*" | wc -l)
 
+          # 【修复点 2】缺主包/中文包不再是 ::warning:: + exit 0 静默跳过，
+          # 改成 ::error:: + exit 1 硬失败。原来的写法等于允许一个不完整的
+          # 产物被悄悄放行、继续走到 upload-artifact 发布出去；用户拿到的
+          # 可能是一个根本没打包成 .run 的残次 artifact，且没有任何显式报错
+          # 提醒。构建产物不完整应该让本次 job 直接标红，而不是放过去。
           if [ -z "$MAIN_PKG" ] || [ -z "$I18N_PKG" ]; then
-            echo "::warning::没找到主包或中文包，跳过打包自解压脚本"
-            exit 0
+            echo "::error::没找到主包(luci-app-turboacc)或中文包(luci-i18n-turboacc-zh-cn)，构建产物不完整，中止打包"
+            exit 1
+          fi
+
+          # 同样硬性校验：一个 kmod 都没找到，大概率是本条修复点 1 的搜索
+          # 范围没生效，或者 add_turboacc.sh 本身在这个内核版本上没有产出
+          # kmod。不能让它悄悄流出去变成一个没有加速能力的空壳安装包。
+          if [ "$KMOD_COUNT" -eq 0 ]; then
+            echo "::error::未找到任何 kmod-* 内核模块包，turboacc 的加速能力无法工作，中止打包(请检查 openwrt/bin/targets 下是否真的生成了 kmod)"
+            exit 1
           fi
 
           PKGDIR="turboacc-pkg"
@@ -377,7 +399,7 @@ jobs:
             -iname "*fullconenat*" \
           \) -exec cp -f {} "$PKGDIR/" \;
 
-          echo "本次打进 $PKGDIR 的文件："
+          echo "本次打进 $PKGDIR 的文件(含 $KMOD_COUNT 个 kmod)："
           ls -lh "$PKGDIR"
 
           # install.sh 用带引号的 <<'EOF'，确保 $0/$?/$MAIN_PKG 这些变量
@@ -427,6 +449,9 @@ jobs:
             echo "错误: 当前目录同时存在 .apk 和 .ipk，无法判定应该用哪个包管理器" >&2
             exit 1
           fi
+
+          echo "本次安装包含以下文件："
+          find . -maxdepth 1 -type f \( -iname '*.apk' -o -iname '*.ipk' \) -exec basename {} \;
 
           if [ "$APK_COUNT" -gt 0 ]; then
             if ! command -v apk >/dev/null 2>&1; then
