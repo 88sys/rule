@@ -8,6 +8,12 @@ name: Build ImmortalWrt Multi-Target TurboACC Packages
 # 目前只接受 6.6 / 6.12 / 6.18。如果 ImmortalWrt 未来某个分支切到其他内核
 # 主线/小版本而上游脚本没更新，"Inject turboacc" 这一步会直接报
 # "Unsupported kernel version" 并失败，这不是本 workflow 的问题，是上游依赖风险。
+#
+# 包命名格式提示：ImmortalWrt 较新分支(如 openwrt-25.12)默认使用 apk 包管理器，
+# 产物命名格式为 "包名-版本.apk"(连字符)，而不是传统 ipk 的
+# "包名_版本_架构.ipk"(下划线)。下游查找/打包逻辑必须同时兼容两种命名，
+# 否则会出现包实际已生成、但因为 glob 用下划线匹配不到连字符命名而被
+# 误判为"缺失"的情况。
 
 on:
   workflow_dispatch:
@@ -259,6 +265,30 @@ jobs:
           curl -fsSL --retry 3 "${{ env.TURBOACC_SCRIPT }}" -o add_turboacc.sh
           bash add_turboacc.sh
 
+      - name: Verify turboacc injection
+        working-directory: openwrt
+        run: |
+          set -euxo pipefail
+          # 硬性校验：add_turboacc.sh 声称执行成功(exit 0)不代表它真的往
+          # package/ 目录塞了东西——如果内核版本超出它的白名单判断范围但
+          # 脚本内部没有用 exit 非 0 处理，就会出现"看起来跑完了，实际
+          # 什么都没注入"的静默失败。这里直接在源码树里找有没有对应目录，
+          # 而不是等几十分钟后编译完成、打包阶段才靠 kmod 数量去猜。
+          FOUND=$(find package -maxdepth 3 -type d \( \
+            -iname "*turboacc*" -o \
+            -iname "*shortcut-fe*" -o \
+            -iname "*fast-classifier*" -o \
+            -iname "*fullconenat*" \
+          \) 2>/dev/null || true)
+
+          if [ -z "$FOUND" ]; then
+            echo "::error::add_turboacc.sh 执行后未在 package/ 目录下找到任何 turboacc/shortcut-fe/fast-classifier/fullconenat 相关目录，注入大概率没有生效(常见原因：本次内核版本不在 add_turboacc.sh 的白名单 6.6/6.12/6.18 内，或上游脚本已变更)，中止构建"
+            exit 1
+          fi
+
+          echo "检测到以下 turboacc 相关源码目录已注入："
+          echo "$FOUND"
+
       - name: Generate .config
         working-directory: openwrt
         run: |
@@ -287,6 +317,18 @@ jobs:
             echo "::error::设备选择项 CONFIG_TARGET_${{ matrix.target }}_${{ matrix.subtarget }}_DEVICE_${{ matrix.device }} 未生效，请核实这个 target/subtarget/device 组合是否存在(可在 make menuconfig 里搜索确认)"
             exit 1
           fi
+
+          # 硬性校验：跟设备符号是同一种失败模式——如果 turboacc 包对应的
+          # symbol 在 make defconfig 阶段被静默丢弃(比如 Kconfig 依赖没有
+          # 满足)，"Generate .config" 那一步本身不会报错，必须在这里主动
+          # grep 出来确认，否则要等几十分钟后编译完成才在打包阶段发现产物
+          # 缺失。
+          if ! grep -q "^CONFIG_PACKAGE_luci-app-turboacc=m" .config; then
+            echo "::error::CONFIG_PACKAGE_luci-app-turboacc=m 未在 .config 中生效，turboacc 包可能未被 defconfig 接受(请检查上一步 Verify turboacc injection 的输出，以及该包在当前内核版本/分支下的 Kconfig 依赖是否满足)"
+            exit 1
+          fi
+
+          echo "设备与 turboacc 包配置校验通过："
           grep -i turboacc .config
 
       - name: Download package sources
@@ -327,17 +369,19 @@ jobs:
           # 之类)文件名大概率不含 "turboacc" 字样，漏了这些等于只装了个空壳
           # LuCI 界面，底层加速模块根本没打进去。
           #
-          # 【修复点 1】搜索范围必须同时包含 bin/packages 和 bin/targets：
-          # OpenWrt/ImmortalWrt 的构建产物分两处存放——bin/packages/<arch>/<feed>/
-          # 放的是跟内核版本无关的通用包(luci、base 等)；而 kmod-* 这类跟当前
-          # 编译内核 vermagic 绑定的内核模块包，只会出现在
+          # 搜索范围同时包含 bin/packages 和 bin/targets：OpenWrt/ImmortalWrt
+          # 的构建产物分两处存放——bin/packages/<arch>/<feed>/ 放的是跟内核
+          # 版本无关的通用包(luci、base 等)；而 kmod-* 这类跟当前编译内核
+          # vermagic 绑定的内核模块包，只会出现在
           # bin/targets/<target>/<subtarget>/packages/ 下。只搜 bin/packages
           # 会导致 kmod-fast-classifier、kmod-shortcut-fe-cm 这些真正干活的
           # 内核模块被漏掉，装出来的只是一个没有加速能力的 LuCI 空壳。
           #
           # 注意：这里不按扩展名过滤(.ipk / .apk 都要)，因为不同分支/不同
-          # 内核阶段 ImmortalWrt 实际产出的包格式并不统一，按扩展名过滤
-          # 会在包管理器切换的分支上悄悄漏掉产物。
+          # 内核阶段 ImmortalWrt 实际产出的包格式并不统一(较新分支默认用
+          # apk，命名为"包名-版本.apk"；旧分支/ipk 格式为
+          # "包名_版本_架构.ipk")，按扩展名过滤会在包管理器切换的分支上
+          # 悄悄漏掉产物。
           find openwrt/bin/packages openwrt/bin/targets -type f \( \
             -iname "*turboacc*" -o \
             -iname "*shortcut-fe*" -o \
@@ -363,30 +407,39 @@ jobs:
           # 校验(用户在路由器上执行时，文件传输损坏会被直接拦下来，而不是
           # 等 tar 解压到一半才报个不明所以的错)，比自己维护提取逻辑更稳。
           #
-          # 先探测一下"主包+中文包"在不在——但实际塞进 PKGDIR 的是
-          # artifact/packages 里已经筛好的全部 turboacc 相关文件(含
-          # shortcut-fe/fast-classifier/fullconenat 及对应 kmod)，不能只塞
-          # 这两个，否则 .run 只剩一个 LuCI 壳子，底层加速内核模块根本没
-          # 带进去，等于白装。
-          MAIN_PKG=$(find artifact/packages -maxdepth 1 -type f -iname "luci-app-turboacc_*" | head -n1 || true)
-          I18N_PKG=$(find artifact/packages -maxdepth 1 -type f -iname "luci-i18n-turboacc-zh-cn_*" | head -n1 || true)
+          # 包名匹配同时兼容 apk 和 ipk 两种命名格式：
+          #   - apk (较新分支默认):  luci-app-turboacc-0.apk           (连字符)
+          #   - ipk (传统格式):      luci-app-turboacc_1.0_x86_64.ipk  (下划线)
+          # 早期版本这里只匹配下划线写法，导致 apk 格式下包明明已经生成，
+          # 却因为 glob 匹配不上而被误判为"缺失"、直接中止打包。
+          MAIN_PKG=$(find artifact/packages -maxdepth 1 -type f \( \
+            -iname "luci-app-turboacc_*" -o \
+            -iname "luci-app-turboacc-*" \
+          \) | head -n1 || true)
+          I18N_PKG=$(find artifact/packages -maxdepth 1 -type f \( \
+            -iname "luci-i18n-turboacc-zh-cn_*" -o \
+            -iname "luci-i18n-turboacc-zh-cn-*" \
+          \) | head -n1 || true)
           KMOD_COUNT=$(find artifact/packages -maxdepth 1 -type f -iname "kmod-*" | wc -l)
 
-          # 【修复点 2】缺主包/中文包不再是 ::warning:: + exit 0 静默跳过，
-          # 改成 ::error:: + exit 1 硬失败。原来的写法等于允许一个不完整的
-          # 产物被悄悄放行、继续走到 upload-artifact 发布出去；用户拿到的
-          # 可能是一个根本没打包成 .run 的残次 artifact，且没有任何显式报错
-          # 提醒。构建产物不完整应该让本次 job 直接标红，而不是放过去。
+          # 缺主包/中文包直接硬失败(::error:: + exit 1)，不允许静默跳过。
+          # 构建产物不完整应该让本次 job 直接标红，而不是放过去让用户拿到
+          # 一个残次 artifact 却毫无提示。
           if [ -z "$MAIN_PKG" ] || [ -z "$I18N_PKG" ]; then
             echo "::error::没找到主包(luci-app-turboacc)或中文包(luci-i18n-turboacc-zh-cn)，构建产物不完整，中止打包"
+            echo "当前 artifact/packages 目录内容："
+            ls -lh artifact/packages/ || true
             exit 1
           fi
 
-          # 同样硬性校验：一个 kmod 都没找到，大概率是本条修复点 1 的搜索
-          # 范围没生效，或者 add_turboacc.sh 本身在这个内核版本上没有产出
-          # kmod。不能让它悄悄流出去变成一个没有加速能力的空壳安装包。
+          echo "已找到主包: $MAIN_PKG"
+          echo "已找到中文包: $I18N_PKG"
+
+          # 同样硬性校验：一个 kmod 都没找到，大概率是 add_turboacc.sh
+          # 本身在这个内核版本上没有产出 kmod，或者上一步的搜索范围没生效。
+          # 不能让它悄悄流出去变成一个没有加速能力的空壳安装包。
           if [ "$KMOD_COUNT" -eq 0 ]; then
-            echo "::error::未找到任何 kmod-* 内核模块包，turboacc 的加速能力无法工作，中止打包(请检查 openwrt/bin/targets 下是否真的生成了 kmod)"
+            echo "::error::未找到任何 kmod-* 内核模块包，turboacc 的加速能力无法工作，中止打包(请检查 openwrt/bin/targets 下是否真的生成了 kmod，以及 Verify turboacc injection 步骤的输出)"
             exit 1
           fi
 
