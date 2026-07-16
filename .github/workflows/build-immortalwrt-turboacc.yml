@@ -15,31 +15,45 @@ name: Build ImmortalWrt Multi-Target TurboACC Packages
 # 否则会出现包实际已生成、但因为 glob 用下划线匹配不到连字符命名而被
 # 误判为"缺失"的情况。
 #
-# .config 设计原则（重要，踩过两次坑，这是第二次修正）：
+# .config 设计原则（重要，踩过三次坑，这是第三次也是最终修正）：
 #
 # 第一次教训：手写 CONFIG_PACKAGE_TURBOACC_INCLUDE_FULLCONE 这类符号，
-# 前缀和命名都是凭印象拍出来的，defconfig 阶段被静默丢弃，硬校验必然
-# 报错退出。
+# 当时判断这是凭印象编出来的，删掉了。
 #
-# 第二次教训：以为"干脆什么子选项都不写，让 upstream Kconfig 默认值
-# 自己生效"就等于"原汁原味"，结果实测 KMOD_COUNT=0——一个加速内核模块
-# 都没编出来。真相是：luci-app-turboacc 里
-# CONFIG_PACKAGE_luci-app-turboacc_INCLUDE_OFFLOADING /
-# CONFIG_PACKAGE_luci-app-turboacc_INCLUDE_BBR_CCA
-# 这些 _INCLUDE_XXX 子选项在 Kconfig 里默认值是"关"(# ... is not set)，
-# 必须显式写 =y 才会通过 select 机制把 kmod-nft-offload/kmod-tcp-bbr 等
-# 内核模块拉进编译列表。LuCI 页面上默认展示"Flow offloading/BBR"只是
-# 前端下拉框的默认展示值，跟对应内核模块有没有真的编译进固件是两回事。
-# 这两个符号名有第三方真实可用配置样例核实过来源(见下方 CONFIG_PACKAGE_
-# luci-app-turboacc_INCLUDE_OFFLOADING 那行注释)，可以放心显式写。
+# 第二次教训：改成完全不写任何子选项，让 upstream Kconfig 默认值自己
+# 生效，结果实测 KMOD_COUNT=0，一个加速内核模块都没编出来。
 #
-# 但"全锥形 NAT1(兼容模式=nft_FULLCONENAT)"是 mufeng05 在 lede 基础版本
-# 之上自己加的功能，精确符号名查不到任何可信第三方来源，为了不重蹈第一次
-# 编符号名的覆辙，这里不手写，改成在 "Generate .config" 步骤里于构建当下
-# 直接从这次真实 clone/注入下来的源码树 Config.in 文件中，用正则动态
-# 提取包含 FULLCONE 字样的真实符号名再写入 .config——用源码树自己的原文，
-# 而不是我记忆/网上查到的名字，这样无论 mufeng05 未来怎么改这个符号名都
-# 不会失配。
+# 第三次教训 + 最终定论：改成从另一个基于 coolsnowwolf/lede 版本的第三方
+# 项目(ophub/amlogic-s9xxx-openwrt#232)抄了 CONFIG_PACKAGE_luci-app-turboacc_
+# INCLUDE_OFFLOADING 这个符号名，结果 CI 报错，压根不存在这个符号。
+# 用 "Discover luci-app-turboacc Kconfig options" 步骤直接从这次真实
+# clone 下来的 package/turboacc/luci-app-turboacc/Makefile 里读出了
+# PKG_CONFIG_DEPENDS 原文，真相是：
+#
+#   1. mufeng05 这个 fork 的 luci-app-turboacc 包，底子是 ImmortalWrt
+#      官方自己维护的 turboacc 包(PKG_MAINTAINER 是 ImmortalWrt 官方
+#      维护者 cnsztl@immortalwrt.org)，不是 coolsnowwolf/lede 那一套
+#      命名规则，所以 lede 版本的符号名(CONFIG_PACKAGE_luci-app-turboacc_
+#      INCLUDE_XXX)从一开始就不适用于这个 fork。
+#   2. 真实前缀是字面量 TURBOACC，不是 $(PKG_NAME)：
+#      CONFIG_PACKAGE_TURBOACC_INCLUDE_NO_FASTPATH      (不加速)
+#      CONFIG_PACKAGE_TURBOACC_INCLUDE_FLOW_OFFLOADING  (Flow offloading)
+#      CONFIG_PACKAGE_TURBOACC_INCLUDE_FAST_CLASSIFIER
+#      CONFIG_PACKAGE_TURBOACC_INCLUDE_SHORTCUT_FE_CM
+#      CONFIG_PACKAGE_TURBOACC_INCLUDE_BBR_CCA
+#      CONFIG_PACKAGE_TURBOACC_INCLUDE_FULLCONE
+#      前四项是互斥的快速转发引擎选择(对应截图下拉框四个选项，只能选一个)，
+#      BBR_CCA 和 FULLCONE 是独立开关。
+#   3. Config.in 文件不存在是正常的：这个包用 LUCI_DEPENDS 的
+#      "+FOO&&BAR:baz" 写法声明条件依赖(FOO=选中的 INCLUDE 开关，
+#      BAR=当前装的是 firewall(fw3/iptables) 还是 firewall4(fw4/nftables))，
+#      Kconfig 子菜单项是构建系统根据 PKG_CONFIG_DEPENDS 自动生成的，不需要
+#      手写 Config.in。ImmortalWrt 25.12 默认是 fw4，所以
+#      INCLUDE_FLOW_OFFLOADING 会自动拉 kmod-nft-offload、INCLUDE_FULLCONE
+#      会自动拉 kmod-nft-fullcone，不需要额外指定 firewall 版本。
+#
+# 结论：这三个符号已经是从这次真实源码树里读出来的原文，不是猜的，可以
+# 放心显式写死，不再需要运行时动态探测。
 
 on:
   workflow_dispatch:
