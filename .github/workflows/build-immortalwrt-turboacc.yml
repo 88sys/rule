@@ -668,7 +668,7 @@ jobs:
           fi
 
           # 统计当前目录(makeself 解压出来的临时目录)下的 apk/ipk 数量。
-          # 注意用 ./*.apk 这种带路径的通配写法，而不是裸文件名——OpenWrt
+          # 注意用带路径的通配写法(./xxx)，而不是裸文件名——OpenWrt
           # 官方已确认 apk add 裸文件名/纯包名会先去联网刷新仓库索引，
           # 网络不通时会等超时才退回装本地文件(见 openwrt/openwrt#17490)，
           # 带路径前缀能让 apk 明确识别这是本地文件。
@@ -688,23 +688,94 @@ jobs:
               echo "错误: 安装包为 apk 格式，但系统未找到 apk 命令" >&2
               exit 1
             fi
-            echo "正在安装当前目录下全部 apk 包 (主程序 + 中文包 + 加速内核模块)..."
-            # --no-network: 明确告诉 apk 这是纯本地安装，不要去联网刷新
-            # 仓库索引——既避免离线路由器上无意义的联网重试和超时等待，
-            # 也避免被当成仓库包名去解析而不是按本地文件处理。
-            set -- ./*.apk
-            apk add --no-network --allow-untrusted "$@"
+            PKGEXT="apk"
+            INSTALL_CMD="apk add --no-network --allow-untrusted"
           elif [ "$IPK_COUNT" -gt 0 ]; then
             if ! command -v opkg >/dev/null 2>&1; then
               echo "错误: 安装包为 ipk 格式，但系统未找到 opkg 命令" >&2
               exit 1
             fi
-            echo "正在安装当前目录下全部 ipk 包 (主程序 + 中文包 + 加速内核模块)..."
-            set -- ./*.ipk
-            opkg install "$@"
+            PKGEXT="ipk"
+            INSTALL_CMD="opkg install"
           else
             echo "错误: 当前目录未找到可安装的 apk/ipk 包，安装中止" >&2
             exit 1
+          fi
+
+          # 显式分阶段安装，不再把所有文件一股脑丢给 apk/opkg 一次性处理。
+          # 说明：apk 本身是事务型依赖求解器，同一条命令里给的多个文件会
+          # 被当成一个整体一起解出依赖图，理论上不依赖传参顺序；但这里
+          # 仍然按"被依赖方先装、依赖方后装"的顺序显式分三步执行，原因是：
+          #   1. opkg(fw3/ipk 分支) 的依赖解析没有 apk 那么强的事务保证，
+          #      显式顺序对 opkg 是实打实有意义的，两条分支统一按同一套
+          #      显式顺序处理，代码更简单，也不用维护两套不同逻辑。
+          #   2. 分阶段执行后，报错信息能精确定位到"是内核模块装失败，
+          #      还是主程序装失败，还是中文包装失败"，比一次性打包报错
+          #      更容易排查，不用回头去猜是哪个文件的问题。
+          #   3. 分阶段之间加了硬性检查(每阶段失败就地 exit 1)，不会出现
+          #      "内核模块没装上，主程序却装上了"这种半吊子状态被静默放过。
+          #
+          # 阶段一：内核模块(kmod-*)优先装。这些是被依赖方，luci-app-turboacc
+          # 在包 metadata 里声明依赖它们，必须先于主程序存在。kmod 之间彼此
+          # 不互相依赖，用一条 glob 一次装完即可，不需要再拆更细的顺序。
+          KMOD_FILES=$(find . -maxdepth 1 -type f -iname "kmod-*.${PKGEXT}")
+          if [ -n "$KMOD_FILES" ]; then
+            echo "=== 阶段一: 安装内核加速模块 (Flow Offloading / 全锥形NAT / BBR 等) ==="
+            echo "$KMOD_FILES" | xargs -n1 basename
+            # shellcheck disable=SC2086
+            set -- $(find . -maxdepth 1 -type f -iname "kmod-*.${PKGEXT}")
+            if ! $INSTALL_CMD "$@"; then
+              echo "错误: 内核加速模块安装失败，中止(主程序依赖它们，不能继续往下装)" >&2
+              exit 1
+            fi
+          else
+            echo "::warning:: 未找到任何 kmod-* 内核模块文件，快速转发引擎/全锥形NAT/BBR 等加速能力将不可用" >&2
+          fi
+
+          # 阶段二：主程序 luci-app-turboacc，此时它依赖的 kmod 已经装好。
+          MAIN_FILE=$(find . -maxdepth 1 -type f -iname "luci-app-turboacc.${PKGEXT}" | head -n1 || true)
+          if [ -z "$MAIN_FILE" ]; then
+            echo "错误: 未找到 luci-app-turboacc.${PKGEXT}，安装中止" >&2
+            exit 1
+          fi
+          echo "=== 阶段二: 安装主程序 luci-app-turboacc ==="
+          if ! $INSTALL_CMD "$MAIN_FILE"; then
+            echo "错误: luci-app-turboacc 安装失败，中止" >&2
+            exit 1
+          fi
+
+          # 阶段三：中文语言包，依赖主程序已存在(LuCI 语言包挂在主程序的
+          # 菜单结构下)，必须最后装。
+          I18N_FILE=$(find . -maxdepth 1 -type f -iname "luci-i18n-turboacc-zh-cn.${PKGEXT}" | head -n1 || true)
+          if [ -n "$I18N_FILE" ]; then
+            echo "=== 阶段三: 安装中文语言包 ==="
+            if ! $INSTALL_CMD "$I18N_FILE"; then
+              echo "错误: 中文语言包安装失败，中止" >&2
+              exit 1
+            fi
+          else
+            echo "::warning:: 未找到中文语言包，跳过(不影响功能，只是界面显示英文)" >&2
+          fi
+
+          # 阶段四(兜底)：以上三类没有覆盖到的其余 apk/ipk 文件(比如未来
+          # add_turboacc.sh 上游新增了别的组件)，最后统一补装一遍，避免
+          # 因为脚本这边的分类 pattern 没跟上上游变化而被静默漏装。
+          REST_FILES=$(find . -maxdepth 1 -type f -iname "*.${PKGEXT}" \
+            ! -iname "kmod-*" \
+            ! -iname "luci-app-turboacc.${PKGEXT}" \
+            ! -iname "luci-i18n-turboacc-zh-cn.${PKGEXT}")
+          if [ -n "$REST_FILES" ]; then
+            echo "=== 阶段四: 安装其余未分类文件 ==="
+            echo "$REST_FILES" | xargs -n1 basename
+            # shellcheck disable=SC2086
+            set -- $(find . -maxdepth 1 -type f -iname "*.${PKGEXT}" \
+              ! -iname "kmod-*" \
+              ! -iname "luci-app-turboacc.${PKGEXT}" \
+              ! -iname "luci-i18n-turboacc-zh-cn.${PKGEXT}")
+            if ! $INSTALL_CMD "$@"; then
+              echo "错误: 其余文件安装失败，中止" >&2
+              exit 1
+            fi
           fi
 
           echo "安装完成，请到 LuCI -> 服务 或 网络 中查看 turboacc"
