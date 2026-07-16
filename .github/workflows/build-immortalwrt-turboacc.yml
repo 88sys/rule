@@ -302,6 +302,20 @@ jobs:
           CONFIG_TARGET_${{ matrix.target }}_${{ matrix.subtarget }}_DEVICE_${{ matrix.device }}=y
           CONFIG_PACKAGE_luci-app-turboacc=m
           CONFIG_PACKAGE_luci-i18n-turboacc-zh-cn=m
+          # 不强制指定 "FastPath Engine"，沿用 upstream 默认值(非高通 NSS
+          # 平台默认是 Flow offloading)。之前一版这里强制选了
+          # FAST_CLASSIFIER，属于多余的改动：Flow offloading 在 FW4
+          # (nftables) + 现代硬件上是社区推荐的默认加速方案，效果正常
+          # (界面截图已确认)，fast classifier / shortcut-fe-cm 是给老内核
+          # /iptables(FW3)/低性能 MIPS 路由器用的旁路加速方案，没有必要
+          # 覆盖默认值。如果以后想针对某些机型强制换成别的引擎，在这里加
+          # CONFIG_PACKAGE_TURBOACC_INCLUDE_FAST_CLASSIFIER=y (或
+          # SHORTCUT_FE_CM=y) 即可。
+          #
+          # 全锥形 NAT / BBR 拥塞控制这两项显式写出来(虽然本身默认就是 y)，
+          # 是为了避免以后 upstream 改了默认值而悄悄漏掉这两个功能。
+          CONFIG_PACKAGE_TURBOACC_INCLUDE_FULLCONE=y
+          CONFIG_PACKAGE_TURBOACC_INCLUDE_BBR_CCA=y
           CONFIG_CCACHE=y
           EOF
           make defconfig
@@ -325,6 +339,15 @@ jobs:
           # 缺失。
           if ! grep -q "^CONFIG_PACKAGE_luci-app-turboacc=m" .config; then
             echo "::error::CONFIG_PACKAGE_luci-app-turboacc=m 未在 .config 中生效，turboacc 包可能未被 defconfig 接受(请检查上一步 Verify turboacc injection 的输出，以及该包在当前内核版本/分支下的 Kconfig 依赖是否满足)"
+            exit 1
+          fi
+
+          # 同理硬性校验 FastPath 引擎选择是否真的生效：如果这个 symbol
+          # 被静默丢弃，会退回 upstream 默认的 "flow offloading"，那样
+          # 编出来的东西没有任何 turboacc 专属加速内核模块(kmod-fast-
+          # classifier)，跟没装 turboacc 效果差不多，必须提前拦下来。
+          if ! grep -q "^CONFIG_PACKAGE_TURBOACC_INCLUDE_FAST_CLASSIFIER=y" .config; then
+            echo "::error::CONFIG_PACKAGE_TURBOACC_INCLUDE_FAST_CLASSIFIER=y 未在 .config 中生效，FastPath 引擎会退回默认的 flow offloading，无法产出 kmod-fast-classifier，中止构建"
             exit 1
           fi
 
@@ -382,11 +405,20 @@ jobs:
           # apk，命名为"包名-版本.apk"；旧分支/ipk 格式为
           # "包名_版本_架构.ipk")，按扩展名过滤会在包管理器切换的分支上
           # 悄悄漏掉产物。
+          #
+          # pattern 说明：fullcone NAT 的内核模块在 nftables 版本下叫
+          # "kmod-nft-fullcone"(没有 "nat" 后缀)，iptables 版本下才叫
+          # "kmod-ipt-fullconenat"/"iptables-mod-fullconenat"(有 "nat")。
+          # 用 "*fullcone*" 这个更宽的 pattern 才能同时兼容两种命名，之前
+          # 用 "*fullconenat*" 会漏掉 nftables 版本的 kmod-nft-fullcone。
+          # "*tcp-bbr*" 对应 turboacc 默认勾选的 BBR 拥塞控制附属功能
+          # (kmod-tcp-bbr)，同样需要显式抓取，否则会被漏掉。
           find openwrt/bin/packages openwrt/bin/targets -type f \( \
             -iname "*turboacc*" -o \
             -iname "*shortcut-fe*" -o \
             -iname "*fast-classifier*" -o \
-            -iname "*fullconenat*" \
+            -iname "*fullcone*" -o \
+            -iname "*tcp-bbr*" \
           \) -exec cp -f {} artifact/packages/ \;
 
           # 规范化改名：主包/中文包 upstream(add_turboacc.sh 每次 curl 下载
@@ -469,7 +501,8 @@ jobs:
             -iname "*turboacc*" -o \
             -iname "*shortcut-fe*" -o \
             -iname "*fast-classifier*" -o \
-            -iname "*fullconenat*" \
+            -iname "*fullcone*" -o \
+            -iname "*tcp-bbr*" \
           \) -exec cp -f {} "$PKGDIR/" \;
 
           echo "本次打进 $PKGDIR 的文件(含 $KMOD_COUNT 个 kmod)："
