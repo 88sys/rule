@@ -19,8 +19,9 @@ name: Build ImmortalWrt Multi-Target TurboACC Packages
 # 3) 校验步骤不能对 .apk 的内部格式做任何假设。ImmortalWrt 不同分支/
 #    不同时期生成的 .apk 可能是老式 APK v2（多个串接的 gzip stream，
 #    .PKGINFO 在其中一段 tar 里），也可能是 apk-tools v3 引入的 ADB
-#    (Alpine Data Block) 二进制格式（完全不是 gzip）。正确做法是先读
-#    文件头 2 字节判断是不是标准 gzip magic(1F 8B)：
+#    (Alpine Data Block) 二进制格式（完全不是 gzip，文件头是 ASCII
+#    "ADBd" = 41 44 42 64）。正确做法是先读文件头 2 字节判断是不是
+#    标准 gzip magic(1F 8B)：
 #      - 是 gzip -> 按 APK v2 处理，用 zlib.decompressobj 顺序解开
 #        gzip member，禁止在数据里盲扫字节找"疑似 gzip 头"，那样命中
 #        随机字节会解出乱码却不报错，比直接失败更危险。
@@ -43,6 +44,18 @@ name: Build ImmortalWrt Multi-Target TurboACC Packages
 #    显式先跑一次 make target/linux/compile，否则会在
 #    package/kernel/linux 阶段报 "can't open .config" /
 #    "cannot stat modules.builtin" 并整体失败。
+# 7) [关键修复] ADB(v3) .apk 的元数据校验依赖宿主 apk 工具的 `adbdump`
+#    子命令。已通过实际构建日志和 OpenWrt 论坛交叉验证：这个宿主二
+#    进制不是 tools/* 体系的产物，而是 package/system/apk 这个包的
+#    HostBuild 产物（源码内 app_adbdump.c 编译进 staging_dir/host/bin/apk）。
+#    不能只在校验前"尝试查找路径碰运气"，必须显式执行一次
+#    `make package/system/apk/host/compile`。
+# 8) [兼容性] openwrt-24.10 分支的默认包管理器仍是 opkg（apk 从
+#    25.12 起才是默认/唯一），24.10 的 feed 树里 package/system/apk
+#    目录不一定存在。因此第 7 条的编译步骤必须先判断该目录是否存在，
+#    不存在就跳过，不能无条件执行导致 24.10 分支平白报错。
+#    对应地，"找不到宿主 apk 工具"这件事，只有当产物目录里真的出现
+#    了 .apk 文件时才判失败；纯 .ipk 场景应直接放行。
 
 on:
   workflow_dispatch:
@@ -462,6 +475,28 @@ jobs:
           make tools/install -j"$(nproc)"
           make toolchain/install -j"$(nproc)"
 
+      - name: Build host apk tool for ADB v3 verification
+        working-directory: openwrt
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # [关键修复] ADB(v3) .apk 元数据校验依赖宿主 apk 的 adbdump。
+          # 它不是 tools/* 的产物，而是 package/system/apk 的 HostBuild
+          # 产物，必须显式构建，不能只在后面"找文件"碰运气。
+          #
+          # [兼容性] openwrt-24.10 分支默认仍是 opkg，package/system/apk
+          # 目录不一定存在于该分支的 feed 树里，因此先判断目录是否存在，
+          # 不存在就跳过，不能无条件执行导致该分支平白报错。
+          if [ -d "package/system/apk" ]; then
+            make package/system/apk/host/compile -j"$(nproc)" V=s || \
+            make package/system/apk/host/compile -j1 V=s
+          else
+            echo "package/system/apk 目录不存在（该分支很可能仍以 opkg 为主，无需构建宿主 apk 工具），跳过。"
+          fi
+
+          echo "=== host apk 候选文件（构建后） ==="
+          find staging_dir build_dir -type f \( -name "apk" -o -name "apk.static" \) 2>/dev/null | sort || true
+
       - name: Prepare target kernel artifacts
         working-directory: openwrt
         shell: bash
@@ -536,29 +571,50 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # 不确定当前分支生成的 .apk 到底是老式 gzip 拼接段(APK v2)
-          # 还是新的 ADB 二进制格式(APK v3)，这里只是尽力找宿主 apk
-          # 工具备用；真正的格式判断交给下一步按文件头 magic bytes 分流。
-          # 找不到就留空，不在这一步直接判死刑。
-          APK_BIN=$(find openwrt/staging_dir/host/bin -maxdepth 1 -type f \( -iname "apk" -o -iname "apk.static" \) 2>/dev/null | head -n1 || true)
+          # 不再只赌 staging_dir/host/bin 一个目录，也不只赌固定名字。
+          # 递归扫描 staging_dir/build_dir 中所有 apk / apk.static 候选，
+          # 并以"支持 adbdump"作为最终判定标准。
+          mapfile -t CANDIDATES < <(
+            find openwrt/staging_dir openwrt/build_dir -type f \( -name "apk" -o -name "apk.static" \) 2>/dev/null | sort -u
+          )
+
+          echo "=== apk 二进制候选 ==="
+          if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+            echo "(未找到任何候选)"
+          else
+            printf '  %s\n' "${CANDIDATES[@]}"
+          fi
+
+          APK_BIN=""
+          for c in "${CANDIDATES[@]}"; do
+            echo "--- probe: $c ---"
+            "$c" --version || true
+            if "$c" adbdump --help >/dev/null 2>&1; then
+              APK_BIN="$c"
+              break
+            fi
+          done
+
+          HAS_APK=0
+          if find artifact/packages -maxdepth 1 -type f -name "*.apk" | grep -q .; then
+            HAS_APK=1
+          fi
 
           if [ -z "$APK_BIN" ]; then
-            echo "::warning::未在 openwrt/staging_dir/host/bin 下找到宿主 apk 工具。如果实际包格式是 ADB v3，后面的校验步骤会因为没有 APK_BIN 而报错；如果是老式 gzip 格式则不受影响。"
-            find openwrt/staging_dir/host/bin -maxdepth 1 -type f 2>/dev/null | sort || true
+            if [ "$HAS_APK" -eq 1 ]; then
+              echo "::error::已检测到 .apk 产物，但未找到支持 adbdump 的宿主 apk 工具。请检查上一步 package/system/apk/host/compile 是否真正产出了二进制。"
+              exit 1
+            fi
+            echo "::warning::未找到支持 adbdump 的宿主 apk 工具；当前产物中没有 .apk（例如 24.10 分支纯 opkg 场景），可以忽略。"
             echo "APK_BIN=" >> "$GITHUB_ENV"
             exit 0
           fi
 
-          if ! "$APK_BIN" adbdump --help >/dev/null 2>&1; then
-            echo "::warning::找到的 apk 工具 ($APK_BIN) 不支持 adbdump 子命令，版本可能与预期不同"
-            "$APK_BIN" --version || true
-            echo "APK_BIN=" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
+          APK_BIN=$(realpath "$APK_BIN")
           echo "APK_BIN=$APK_BIN" >> "$GITHUB_ENV"
           echo "使用的宿主 apk 工具: $APK_BIN"
           "$APK_BIN" --version
+          "$APK_BIN" adbdump --help >/dev/null 2>&1
 
       - name: Verify package metadata versions (not just filenames)
         shell: bash
