@@ -59,6 +59,20 @@ name: Build ImmortalWrt Multi-Target TurboACC Packages
 #      我们对根因的理解是否正确——哪怕以后 luci.mk 又换了别的变量名，
 #      只要产物版本号是 0，这里都能拦下来，不会再靠猜。
 #
+# 已知问题修复记录（2026-07-17，第四版 —— 校验脚本自己的 bug，不是
+# PKG_VERSION/PKG_PO_VERSION 修复失效）：
+# 上面第三版加的 "Verify package metadata versions" 步骤里，解析 apk
+# 包 .PKGINFO 时写的是 grep "^version = "，但已核对 Alpine apk-tools
+# 官方 apk spec 确认，.PKGINFO 里版本字段的 key 实际是 "pkgver"（例如
+# "pkgname = grub / pkgver = 2.12-r7"），根本没有 "version" 这个字段。
+# 结果 grep 永远匹配不到、VER 永远是空字符串，把 luci-i18n-turboacc-zh-cn
+# 这种版本号实际已经正确（文件名 luci-i18n-turboacc-zh-cn-26.173.86210
+# ~6909fa3.apk 已经带着真实版本号）的包，错判成"版本号异常"给拦截了。
+# 这是校验代码本身的字段名笔误，跟第三版修的 PKG_VERSION/PKG_PO_VERSION
+# 注入逻辑无关——那部分从文件名看已经生效。已把 grep 模式改成
+# "^pkgver = "。ipk 分支解析 control 文件用的 "Version:" 字段名是对的
+# （opkg/dpkg 风格 control 文件本来就用这个字段名），未改动。
+#
 # CONFIG_PACKAGE_TURBOACC_INCLUDE_* 符号前缀是字面量 TURBOACC（不是
 # luci-app-turboacc），来自 package/turboacc/luci-app-turboacc/Makefile 的
 # PKG_CONFIG_DEPENDS/LUCI_DEPENDS。该包没有独立 Config.in，子选项由
@@ -534,13 +548,22 @@ jobs:
           # 字段是否为 0——文件名里带版本号不代表包内 apk/ipk 元数据版本号
           # 正确，两者是分开的信息源，apk index 校验用的是元数据。
           # 这里对 artifact/packages 下每一个包，真正解析其内部版本字段。
+          #
+          # 字段名更正（2026-07-17）：.PKGINFO 里版本字段的 key 是
+          # "pkgver"，不是 "version"（已核对 Alpine apk-tools 官方 apk
+          # spec 文档确认，例如: "pkgname = grub / pkgver = 2.12-r7 /
+          # pkgdesc = ..."）。上一版写成了 grep "^version = "，这个字段
+          # 在 .PKGINFO 里根本不存在，导致 grep 永远匹配不到、VER 永远
+          # 为空，把本来版本号正确的包错判成异常并拦截构建——是校验脚本
+          # 自己的 bug，不是 PKG_VERSION/PKG_PO_VERSION 修复失效。
           FAIL=0
           for PKG in artifact/packages/*; do
             [ -e "$PKG" ] || continue
             case "$PKG" in
               *.apk)
-                # apk 包是 tar 归档，info 段里的 .PKGINFO 含 version 字段
-                VER=$(tar -xzOf "$PKG" .PKGINFO 2>/dev/null | grep "^version = " | cut -d' ' -f3 || true)
+                # apk 包是拼接的多段 gzip 归档，control 段里的 .PKGINFO
+                # 用 "pkgver = X" 记录版本（不是 "version ="）
+                VER=$(tar -xzOf "$PKG" .PKGINFO 2>/dev/null | grep "^pkgver = " | cut -d' ' -f3 || true)
                 ;;
               *.ipk)
                 # ipk 是 ar 归档，control.tar.gz 里的 control 文件含 Version 字段
