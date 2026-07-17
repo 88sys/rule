@@ -44,10 +44,9 @@ name: Build ImmortalWrt Multi-Target TurboACC Packages
 #    显式先跑一次 make target/linux/compile，否则会在
 #    package/kernel/linux 阶段报 "can't open .config" /
 #    "cannot stat modules.builtin" 并整体失败。
-# 7) [关键修复] ADB(v3) .apk 的元数据校验依赖宿主 apk 工具的 `adbdump`
-#    子命令。已通过实际构建日志和 OpenWrt 论坛交叉验证：这个宿主二
-#    进制不是 tools/* 体系的产物，而是 package/system/apk 这个包的
-#    HostBuild 产物（源码内 app_adbdump.c 编译进 staging_dir/host/bin/apk）。
+# 7) ADB(v3) .apk 的元数据校验依赖宿主 apk 工具的 `adbdump` 子命令。
+#    这个宿主二进制不是 tools/* 体系的产物，而是 package/system/apk
+#    这个包的 HostBuild 产物，固定安装到 staging_dir/host/bin/apk。
 #    不能只在校验前"尝试查找路径碰运气"，必须显式执行一次
 #    `make package/system/apk/host/compile`。
 # 8) [兼容性] openwrt-24.10 分支的默认包管理器仍是 opkg（apk 从
@@ -56,6 +55,28 @@ name: Build ImmortalWrt Multi-Target TurboACC Packages
 #    不存在就跳过，不能无条件执行导致 24.10 分支平白报错。
 #    对应地，"找不到宿主 apk 工具"这件事，只有当产物目录里真的出现
 #    了 .apk 文件时才判失败；纯 .ipk 场景应直接放行。
+# 9) [根因修正，勿回退到旧写法] 宿主 apk 工具的"能力探测"不能用
+#    `apk adbdump --help` 的退出码。依据是 apk-tools 官方文档
+#    (apk.8.scd)：--help/-h 是全局选项(global option)，规范用法是
+#    放在子命令之前（`apk --help`），文档还特别注明"把 applet 专属
+#    选项放在 command 之前"这种反过来的写法只是历史兼容且已
+#    deprecated——也就是说 `apk adbdump --help` 这种写法本身就不
+#    规范，观察到的非零退出码只是这个不规范用法的副作用（很可能被
+#    adbdump 当成一个不存在的文件参数处理），不代表这个二进制不
+#    支持 adbdump。之前两轮修复分别猜测"usage()固定返回1"或者去匹配
+#    "is not an apk command"这类报错文本，本质上都是同一类靠猜字符
+#    串的脆弱探测，谁都不能保证跨版本稳定。
+#    正确做法：彻底不做这种间接猜测式探测。
+#      a) 优先直接使用 package/system/apk/host/compile 的规范安装
+#         路径 staging_dir/host/bin/apk（HostBuild 固定装到这里，
+#         已被实际构建日志证实存在且可执行）。
+#      b) 只用 --version 确认二进制能跑、且输出匹配 `apk-tools 3.`
+#         （adbdump 是 apk-tools v3 的内置常驻子命令，不是编译期可
+#         选功能，凡是 v3 二进制理论上都带 adbdump，不需要额外探测
+#         这个子命令"存不存在"）。
+#      c) "到底能不能解析出这批 .apk 的真实元数据"这件事，交给下一
+#         步 Python 对真实产物发起真实调用去判定——用真实调用的
+#         成功/失败作为唯一判据，不再自造任何合成探测。
 
 on:
   workflow_dispatch:
@@ -480,9 +501,10 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # [关键修复] ADB(v3) .apk 元数据校验依赖宿主 apk 的 adbdump。
-          # 它不是 tools/* 的产物，而是 package/system/apk 的 HostBuild
-          # 产物，必须显式构建，不能只在后面"找文件"碰运气。
+          # ADB(v3) .apk 元数据校验依赖宿主 apk 的 adbdump。它不是
+          # tools/* 的产物，而是 package/system/apk 的 HostBuild 产物，
+          # 固定安装到 staging_dir/host/bin/apk，必须显式构建，不能只
+          # 在后面"找文件"碰运气。
           #
           # [兼容性] openwrt-24.10 分支默认仍是 opkg，package/system/apk
           # 目录不一定存在于该分支的 feed 树里，因此先判断目录是否存在，
@@ -503,10 +525,10 @@ jobs:
         run: |
           set -euxo pipefail
           export CCACHE_DIR="$HOME/.ccache"
-          # 关键修复：仅 tools/toolchain 还不够。turboacc 开启的
-          # flow offload / fullcone / BBR 等选项会拉起 kernel/kmod
-          # 依赖链，进而触发 package/kernel/linux 打包；该打包逻辑
-          # 直接读取 $(LINUX_DIR)/.config、modules.builtin、
+          # 仅 tools/toolchain 还不够。turboacc 开启的 flow offload /
+          # fullcone / BBR 等选项会拉起 kernel/kmod 依赖链，进而触发
+          # package/kernel/linux 打包；该打包逻辑直接读取
+          # $(LINUX_DIR)/.config、modules.builtin、
           # modules.builtin.modinfo，这些文件由 target/linux/compile
           # 产出，不会被单独的 package 编译自动触发。必须显式先跑一次。
           make target/linux/compile -j"$(nproc)" V=s || \
@@ -571,29 +593,54 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # 不再只赌 staging_dir/host/bin 一个目录，也不只赌固定名字。
-          # 递归扫描 staging_dir/build_dir 中所有 apk / apk.static 候选，
-          # 并以"支持 adbdump"作为最终判定标准。
-          mapfile -t CANDIDATES < <(
-            find openwrt/staging_dir openwrt/build_dir -type f \( -name "apk" -o -name "apk.static" \) 2>/dev/null | sort -u
-          )
+          # [根因修正 #9] 不再用 `apk adbdump --help` 的退出码做能力
+          # 探测，也不再靠猜测报错文本做字符串匹配。依据 apk-tools 官方
+          # 文档：--help/-h 是全局选项，规范用法要放在子命令之前
+          # （`apk --help`），放在子命令之后属于不规范用法，其非零退出
+          # 码不能证明子命令不存在。
+          #
+          # 策略：
+          #   1) 优先直接用 package/system/apk/host/compile 的规范安装
+          #      路径 staging_dir/host/bin/apk（已被实际构建日志证实
+          #      存在且可执行）。
+          #   2) 只用 --version 确认二进制能跑且是 apk-tools 3.x
+          #      （adbdump 是 v3 内置常驻子命令，不是编译期可选功能）。
+          #   3) 真正"能不能解析"这件事留给下一步 Python 对真实产物的
+          #      真实调用去判定，不再自造合成探测。
+          PRIMARY="openwrt/staging_dir/host/bin/apk"
+          APK_BIN=""
 
-          echo "=== apk 二进制候选 ==="
-          if [ "${#CANDIDATES[@]}" -eq 0 ]; then
-            echo "(未找到任何候选)"
+          if [ -x "$PRIMARY" ]; then
+            VER=$("$PRIMARY" --version 2>&1 || true)
+            echo "候选(规范路径): $PRIMARY -> ${VER:-<无输出>}"
+            if printf '%s\n' "$VER" | grep -qE '^apk-tools 3\.'; then
+              APK_BIN="$PRIMARY"
+            fi
           else
-            printf '  %s\n' "${CANDIDATES[@]}"
+            echo "规范路径 $PRIMARY 不存在或不可执行"
           fi
 
-          APK_BIN=""
-          for c in "${CANDIDATES[@]}"; do
-            echo "--- probe: $c ---"
-            "$c" --version || true
-            if "$c" adbdump --help >/dev/null 2>&1; then
-              APK_BIN="$c"
-              break
+          if [ -z "$APK_BIN" ]; then
+            echo "规范路径不可用，回退到全目录扫描"
+            mapfile -t CANDIDATES < <(
+              find openwrt/staging_dir openwrt/build_dir -type f \( -name "apk" -o -name "apk.static" \) 2>/dev/null | sort -u
+            )
+            echo "=== apk 二进制候选 ==="
+            if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+              echo "(未找到任何候选)"
+            else
+              printf '  %s\n' "${CANDIDATES[@]}"
             fi
-          done
+
+            for c in "${CANDIDATES[@]}"; do
+              VER=$("$c" --version 2>&1 || true)
+              echo "--- probe: $c -> ${VER:-<无输出>} ---"
+              if printf '%s\n' "$VER" | grep -qE '^apk-tools 3\.'; then
+                APK_BIN="$c"
+                break
+              fi
+            done
+          fi
 
           HAS_APK=0
           if find artifact/packages -maxdepth 1 -type f -name "*.apk" | grep -q .; then
@@ -602,10 +649,10 @@ jobs:
 
           if [ -z "$APK_BIN" ]; then
             if [ "$HAS_APK" -eq 1 ]; then
-              echo "::error::已检测到 .apk 产物，但未找到支持 adbdump 的宿主 apk 工具。请检查上一步 package/system/apk/host/compile 是否真正产出了二进制。"
+              echo "::error::已检测到 .apk 产物，但未找到 apk-tools 3.x 的宿主二进制。请检查上一步 package/system/apk/host/compile 是否真正产出了二进制。"
               exit 1
             fi
-            echo "::warning::未找到支持 adbdump 的宿主 apk 工具；当前产物中没有 .apk（例如 24.10 分支纯 opkg 场景），可以忽略。"
+            echo "::warning::未找到宿主 apk 工具；当前产物中没有 .apk（例如 24.10 分支纯 opkg 场景），可以忽略。"
             echo "APK_BIN=" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -614,7 +661,6 @@ jobs:
           echo "APK_BIN=$APK_BIN" >> "$GITHUB_ENV"
           echo "使用的宿主 apk 工具: $APK_BIN"
           "$APK_BIN" --version
-          "$APK_BIN" adbdump --help >/dev/null 2>&1
 
       - name: Verify package metadata versions (not just filenames)
         shell: bash
@@ -677,23 +723,46 @@ jobs:
               raise RuntimeError("遍历所有 gzip member 后仍未找到 .PKGINFO")
 
           def apk_pkgver_v3(path: pathlib.Path):
-              """新式 APK v3：ADB(Alpine Data Block) 二进制格式，
-              用官方 apk adbdump 子命令解析，不手工逆向二进制。"""
+              """新式 APK v3：ADB(Alpine Data Block) 二进制格式。
+              直接对真实文件调用 `apk adbdump --format json` ——这是
+              唯一可信的能力/正确性判据，不依赖任何提前做的合成探测。
+              官方文档 apk-adbdump.8.scd 确认 --format json 是受支持
+              的选项，顶层字段名为 "info"（历史上也可能叫 "pkginfo"，
+              两者都做兼容读取）。
+              """
               if not APK_BIN:
                   raise RuntimeError(
-                      "文件不是 gzip 开头（非 APK v2），判断为 ADB v3，"
-                      "但没有可用的宿主 apk 工具（APK_BIN 为空），无法解析"
+                      "文件不是 gzip 开头（非 APK v2），判断为 ADB v3，但"
+                      " APK_BIN 为空，无法用宿主 apk 工具解析"
                   )
-              out = subprocess.check_output(
+              proc = subprocess.run(
                   [APK_BIN, "adbdump", "--format", "json", str(path)],
-                  stderr=subprocess.STDOUT,
+                  capture_output=True,
               )
-              data = json.loads(out.decode("utf-8", errors="replace"))
-              pkginfo = data.get("pkginfo") or data.get("info") or {}
+              out = proc.stdout.decode("utf-8", errors="replace")
+              err = proc.stderr.decode("utf-8", errors="replace")
+              if not out.strip():
+                  raise RuntimeError(
+                      f"apk adbdump 没有任何 stdout 输出，退出码 {proc.returncode}，"
+                      f"stderr={err[:500]}"
+                  )
+              try:
+                  data = json.loads(out)
+              except json.JSONDecodeError as e:
+                  raise RuntimeError(
+                      f"adbdump 输出不是合法 JSON: {e}; raw(前500字符)={out[:500]}"
+                  )
+              pkginfo = data.get("info") or data.get("pkginfo") or {}
+              if not isinstance(pkginfo, dict):
+                  raise RuntimeError(
+                      f"adbdump JSON 顶层 info 不是 object: {type(pkginfo).__name__}; raw={out[:500]}"
+                  )
               ver = pkginfo.get("version")
               if not ver:
-                  raise RuntimeError(f"adbdump JSON 中没有 pkginfo.version 字段，原始输出: {data}")
-              return ver, "apk v3 adbdump pkginfo.version"
+                  raise RuntimeError(
+                      f"adbdump JSON 里 info 中没有 version 字段; raw={out[:500]}"
+                  )
+              return ver, "apk v3 adbdump info.version"
 
           def apk_pkgver(path: pathlib.Path):
               head = path.read_bytes()[:2]
@@ -755,10 +824,11 @@ jobs:
 
           fail = False
           for pkg in pkgs:
+              suffix = pkg.suffix.lower()
               try:
-                  if pkg.suffix == ".apk":
+                  if suffix == ".apk":
                       ver, detail = apk_pkgver(pkg)
-                  elif pkg.suffix == ".ipk":
+                  elif suffix == ".ipk":
                       ver, detail = ipk_version(pkg)
                   else:
                       continue
