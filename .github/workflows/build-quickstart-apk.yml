@@ -191,13 +191,20 @@ jobs:
 
           echo "已确认：network-online.go 里的 fallback 补丁已经编进这个二进制"
 
+      # 修复点：原来的 --depth=1 浅克隆会导致 OpenWrt 内部
+      # 依赖 git describe / tag 历史计算内核版本号（kernel.version）
+      # 时探测失败，从而生成类似 "6.12.94~unknown-r1" 这种带
+      # unknown 后缀的目录名，导致后续内核包安装阶段找不到
+      # modules.builtin 而整体失败(package/kernel/linux failed to build)。
+      # 这里改成拉取有限历史 + tags，让版本探测能正常工作。
       - name: Clone OpenWrt buildroot
         shell: bash
         run: |
           set -euxo pipefail
 
-          git clone --depth=1 --branch "${OWRT_BRANCH}" "${OWRT_REPO}" openwrt
+          git clone --branch "${OWRT_BRANCH}" --depth=200 --no-single-branch "${OWRT_REPO}" openwrt
           cd openwrt
+          git fetch --tags --depth=200
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
@@ -335,6 +342,37 @@ jobs:
 
           make tools/install -j"$(nproc)" || make tools/install -j1 V=s
           make toolchain/install -j"$(nproc)" || make toolchain/install -j1 V=s
+
+      # 兜底措施：即便上面已经把 clone 改成非浅克隆来修复根因，
+      # 这一步依然保留作为防御性修复 —— 如果内核目录名仍然带有
+      # "~unknown" 或其他后缀导致跟 Makefile 期望的名字对不上，
+      # 在这里建一个短名字的 symlink，让后续 package/kernel/linux
+      # 安装阶段能找到 modules.builtin，避免整个 build 失败。
+      - name: Normalize kernel directory name (defensive fallback)
+        working-directory: openwrt
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          shopt -s nullglob
+          for d in build_dir/target-*/linux-*; do
+            [ -d "$d" ] || continue
+            base=$(basename "$d")
+            dir=$(dirname "$d")
+            # short name = 去掉第一个 "~" 及其后面的所有内容
+            short=$(echo "$base" | sed 's/~.*//')
+            if [ "$short" != "$base" ] && [ ! -e "$dir/$short" ]; then
+              echo "Creating symlink: $dir/$short -> $base"
+              ln -s "$base" "$dir/$short"
+            fi
+          done
+
+          echo "=== kernel dir listing (debug) ==="
+          for d in build_dir/target-*/linux-*; do
+            [ -d "$d" ] || continue
+            echo "--- $d ---"
+            ls -la "$d" || true
+          done
 
       - name: Build quickstart packages
         working-directory: openwrt
